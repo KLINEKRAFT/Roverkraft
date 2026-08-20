@@ -20,7 +20,7 @@
 <!-- ?v= is a cache buster: GitHub Pages serves assets with max-age=600, so a
      returning player keeps the old layout for ten minutes after a deploy.
      Bump this whenever styles.css changes in a way players must see. -->
-<link rel="stylesheet" href="src/ui/styles.css?v=6" />
+<link rel="stylesheet" href="src/ui/styles.css?v=7" />
 <script type="importmap">
 {
   "imports": {
@@ -204,6 +204,7 @@
     <button class="btn" id="btnResume">RESUME</button>
     <button class="btn ghost" id="btnCodexFromPause">CODEX</button>
     <button class="btn ghost" id="btnHelp">CONTROLS</button>
+    <button class="btn ghost" id="btnAway">AWAY MESSAGE</button>
     <button class="btn ghost danger" id="btnAbort">ABORT TO MENU</button>
   </div>
 </div>
@@ -222,6 +223,37 @@
     <p class="card-text" id="cardText"></p>
     <div class="card-obj" id="cardObj"></div>
     <button class="btn primary" id="cardGo">ACKNOWLEDGE</button>
+  </div>
+</div>
+
+<!-- ============ AWAY ============
+     Deliberately NOT an .overlay. That class exists to put a scrim and a 7 px
+     blur between the player and the world, which is right for a settings sheet
+     and exactly wrong here: the whole point of an away screen is that the
+     basin stays on view behind the message. The only thing between the two is
+     a scrim sized to the type, not to the screen. -->
+<div id="away" class="away hidden">
+  <div class="away-inner">
+    <div class="away-kicker">SURFACE OPERATIONS SUSPENDED</div>
+    <p class="away-msg" id="awayMsg"></p>
+    <div class="away-meta"><span>HOLDING</span><b id="awayFor">00:00</b></div>
+  </div>
+  <div class="away-foot">PRESS ANY KEY TO RESUME</div>
+</div>
+
+<!-- ============ AWAY COMPOSER ============ -->
+<div id="awaySet" class="overlay sheet hidden">
+  <div class="panel-head"><h2>AWAY MESSAGE</h2><button class="x" data-close="awaySet">ESC</button></div>
+  <div class="awayset">
+    <label class="awayset-lead" for="awayText">Held over the basin while the survey stands down. The rover keeps its
+      place, the clock stops and nothing drains &mdash; the camera is the only thing still moving.</label>
+    <input id="awayText" type="text" maxlength="140" autocomplete="off" autocorrect="off"
+           spellcheck="false" placeholder="BACK IN TEN MINUTES" aria-describedby="awayCount" />
+    <div class="awayset-foot"><span id="awayCount">0/140</span></div>
+  </div>
+  <div class="panel-foot">
+    <button class="btn primary" id="awayGo">STAND DOWN</button>
+    <button class="btn ghost" id="awayCancel">CANCEL</button>
   </div>
 </div>
 

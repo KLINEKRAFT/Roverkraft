@@ -23,7 +23,12 @@ import { MISSIONS } from './game/lore.js';
 import { UI } from './ui/theme.js';
 
 const $ = (id) => document.getElementById(id);
-const ST = { BOOT: 0, MENU: 1, PLAY: 2, PAUSE: 3, CODEX: 4, HELP: 5, CARD: 6 };
+const ST = { BOOT: 0, MENU: 1, PLAY: 2, PAUSE: 3, CODEX: 4, HELP: 5, CARD: 6,
+  /* AWAY is a paused world you can still see. It is its own state rather
+     than a flag on PAUSE because it renders a different frame: the sim is
+     frozen exactly as PAUSE freezes it, but the camera keeps working and
+     the HUD comes off. */
+  AWAY: 7 };
 
 /* A coarse pointer means a touch screen. It is not a proxy for a slow chip —
    an iPad Pro reports it — but it IS a proxy for a thermally limited enclosure
@@ -52,7 +57,10 @@ const App = {
     oneHand: false,
     detail: 2,            // 0 = two rings off the tier, 1 = one, 2 = tier
     clutter: 2,           // 0 = sparse, 1 = half, 2 = tier
-    shadows: 1            // 0 = off, 1 = tier
+    shadows: 1,           // 0 = off, 1 = tier
+    /* Remembered between sessions. Whoever puts up an away message tends to
+       put up the same one. */
+    awayMsg: ''
   }, Save.settings()),
   elapsed: 0, sunAz: 4.35, paused: false
 };
@@ -298,15 +306,133 @@ let panelReturn = ST.MENU;
 function openPanel(id, state) {
   if (App.state === ST.MENU || App.state === ST.PLAY) panelReturn = App.state;
   App.state = state;
+  /* SYSTEMS is reachable from the main menu as well as from a drive, and an
+     away message only means something once there is a survey to stand down
+     from — leaving it on screen there would offer a button whose exit path
+     drops the player into a game they never started. */
+  if (id === 'pause') $('btnAway').hidden = panelReturn !== ST.PLAY;
   $(id).classList.remove('hidden');
   App.input.unlock();
   App.input.showTouch(false);
   App.audio.ui('tick');
 }
 function closePanels() {
-  for (const id of ['pause', 'codex', 'help']) $(id).classList.add('hidden');
+  for (const id of ['pause', 'codex', 'help', 'awaySet']) $(id).classList.add('hidden');
   if (panelReturn === ST.MENU) showMenu();
   else { App.state = ST.PLAY; App.input.lock(); App.input.showTouch(true); }
+}
+
+/* ============================================================
+   AWAY — a paused world you can still watch
+
+   The pause sheet already stops the simulation; what it does not do is let you
+   look at it. Behind every panel the camera cuts to the menu's slow orbit at
+   150 m over the basin centre, so the rover you parked is nowhere on screen.
+   AWAY keeps the machine in frame and puts nothing over it but type.
+
+   Nothing in the world advances here: no MET, no power draw, no sun. The
+   camera does move, and that is not a cheat — the chase camera is not a real
+   camera on a real rover, a distinction this project already makes where it
+   decided not to put the view behind the comms delay. A dead-still frame reads
+   as a crashed tab; a slow orbit reads as a hold.
+   ============================================================ */
+const AWAY_ARM_S = 0.4;   // ignore the keystroke that submitted the message
+
+function enterAway(msg) {
+  const text = (msg || '').trim();
+  App.settings.awayMsg = text;
+  Save.saveSettings(App.settings);
+
+  $('awayMsg').textContent = text;
+  $('awaySet').classList.add('hidden');
+  $('pause').classList.add('hidden');
+  $('away').classList.remove('hidden');
+  App.hud.setTray(false);
+  App.hud.hideHUD();
+  App.input.unlock();
+  App.input.showTouch(false);
+
+  App.awayT = 0;
+  App.awayShown = -1;
+  App.awaySince = performance.now();
+  /* Datum the orbit on wherever the operator was already looking, so entering
+     away is a slow drift from the current view rather than a cut. */
+  App.awayYaw0 = App.rig.yaw;
+  /* Carry the operator's zoom, but frame the rover: at the 2.6 m floor an
+     orbit is a wheel inspection, and past 60 m the machine is a speck. */
+  App.awayDist = clamp(App.rig.dist * 1.25, 9, 60);
+  App.state = ST.AWAY;
+  App.audio.ui('tick');
+}
+
+function exitAway() {
+  $('away').classList.add('hidden');
+  /* Swallow whatever ended the hold, so it does not also act on the rover.
+     `mouse.clicked` is a latch that survives until a frame consumes it, and
+     the compatibility mousedown the browser fires after our pointerdown lands
+     on the canvas AFTER this function has run — clearing the latch here would
+     be undone a microsecond later. So the flag is consumed at the top of the
+     next tick instead, where the ordering is no longer in question.
+     Without it, dismissing the away screen with a click fires the drill. */
+  App.swallowClick = true;
+  App.hud.showHUD();
+  App.state = ST.PLAY;
+  /* The rig's smoothing history still points at the orbit it was just flying,
+     up to 60 m off the rover. Without this the return is a one-second swoop
+     from out there back into the chase seat. */
+  App.rig.first = true;
+  App.input.lock();
+  App.input.showTouch(true);
+  App.audio.ui('ok');
+}
+
+/* Frozen world, live camera. Deliberately does NOT touch App.elapsed, sunAz or
+   the game clock — the difference between this and idleWorld() is the whole
+   feature. */
+function awayWorld(dt) {
+  const { engine, terrain, sky, props, rover } = App;
+  App.awayT += dt;
+
+  const r = rover.pos;
+  const a = App.awayYaw0 + App.awayT * 0.030;      // ~3.5 min per revolution
+  const d = App.awayDist;
+  const cx = r.x + Math.sin(a) * d, cz = r.z + Math.cos(a) * d;
+  /* Rise with the standoff so the rover is looked slightly down on rather than
+     shot from the dirt, and never let the eye go under the regolith — the same
+     clearance the chase rig keeps. */
+  let cy = r.y + d * 0.34 + 1.2;
+  const gh = terrain.heightAt(cx, cz);
+  if (cy < gh + 1.0) cy = gh + 1.0;
+  engine.camera.position.set(cx, cy, cz);
+  engine.camera.lookAt(r.x, r.y + 0.9, r.z);
+
+  terrain.update(dt, engine.camera, sky.sunDir);
+  sky.update(dt, engine.camera, App.elapsed);
+  props.update(dt, App.elapsed, engine.camera);
+  engine.aimShadow(rover.pos, sky.sunDir);
+
+  /* One repaint a second. The elapsed hold is the only live number on the
+     screen and it changes once a second; repainting it at frame rate is work
+     for nothing on a device that may sit here for an hour. */
+  const secs = Math.floor((performance.now() - App.awaySince) / 1000);
+  if (secs !== App.awayShown) {
+    App.awayShown = secs;
+    const h = Math.floor(secs / 3600), m = Math.floor(secs / 60) % 60, sc = secs % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    $('awayFor').textContent = h ? `${h}:${pad(m)}:${pad(sc)}` : `${pad(m)}:${pad(sc)}`;
+  }
+}
+
+function openAwayComposer() {
+  if (panelReturn !== ST.PLAY) return;
+  const box = $('awayText');
+  box.value = App.settings.awayMsg || '';
+  $('awayCount').textContent = `${box.value.length}/140`;
+  $('pause').classList.add('hidden');
+  openPanel('awaySet', ST.PAUSE);
+  /* The field has to win the focus back from the button that opened it, and
+     on a phone the keyboard should come up without a second tap. */
+  setTimeout(() => { box.focus(); box.select(); }, 30);
 }
 
 function wireUI() {
@@ -318,9 +444,10 @@ function wireUI() {
   $('btnResume').onclick = closePanels;
   $('btnHelp').onclick = () => { $('pause').classList.add('hidden'); openPanel('help', ST.HELP); };
   $('btnCodexFromPause').onclick = () => { $('pause').classList.add('hidden'); openPanel('codex', ST.CODEX); };
+  $('btnAway').onclick = openAwayComposer;
   $('btnAbort').onclick = () => {
     Save.write(App.game.save());
-    for (const id of ['pause', 'codex', 'help']) $(id).classList.add('hidden');
+    for (const id of ['pause', 'codex', 'help', 'awaySet']) $(id).classList.add('hidden');
     showMenu();
   };
   $('cardGo').onclick = () => {
@@ -342,6 +469,30 @@ function wireUI() {
   // to drift out of step.
   document.querySelectorAll('[data-press]').forEach(b => {
     b.onclick = () => { App.input.press(b.dataset.press); App.audio.ui('tick'); };
+  });
+
+  /* ---- away composer ---- */
+  $('awayGo').onclick = () => enterAway($('awayText').value);
+  $('awayCancel').onclick = closePanels;
+  $('awayText').oninput = (e) => { $('awayCount').textContent = `${e.target.value.length}/140`; };
+  $('awayText').onkeydown = (e) => {
+    /* Enter submits. The keydown is swallowed here so it never reaches the
+       game's global key handler, which would otherwise count as the "any key"
+       that dismisses the screen this very keystroke just raised. */
+    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); enterAway(e.target.value); }
+    else if (e.key === 'Escape') { e.stopPropagation(); closePanels(); }
+    else e.stopPropagation();
+  };
+  /* Any deliberate act ends the hold. Registered on the window rather than on
+     #away because that element is pointer-events:none — it is a caption over
+     the basin, not a surface to click. */
+  addEventListener('pointerdown', (e) => {
+    if (App.state !== ST.AWAY) return;
+    /* preventDefault on the pointer event asks the browser not to synthesise
+       the compatibility mousedown at all. Belt; exitAway()'s swallow flag is
+       the braces, because that suppression is not guaranteed everywhere. */
+    e.preventDefault();
+    exitAway();
   });
 
   // one close path, so the ESC button and the Escape key cannot diverge
@@ -585,9 +736,12 @@ function buildHelpUI() {
       ${row('Headlights', 'F')}${row('Camera mode', 'C')}
       ${row('Photo mode', 'P')}${row('Codex', 'TAB')}
       ${row('Pause / systems', 'ESC')}${row('Toggle HUD', 'H')}
+      <div class="keyrow"><span>AWAY MESSAGE, in the pause panel, holds the survey behind your own
+        text with the basin still on view. Any key resumes.</span></div>
     </div>
     <div class="keygroup"><h4>VIEW</h4>
       ${row('Look', 'MOUSE')}${row('Zoom', 'WHEEL')}
+      ${row('Zoom out / in', '−', '+')}
       ${row('In photo mode: fly', 'W', 'A', 'S', 'D')}
       ${row('In photo mode: up / down', 'Q', 'Z')}${row('In photo mode: boost', 'SHIFT')}
       ${row('Save the frame as a PNG', 'K')}
@@ -626,6 +780,10 @@ let last = performance.now(), acc = 0, fpsT = 0, fpsN = 0;
 /* Nothing behind a menu is worth 60 Hz, and a phone left on the pause panel
    used to keep the GPU at full tilt for as long as the player was reading. */
 const PANEL_HZ = 20;
+/* The away screen is the one paused surface the player is actually looking AT,
+   and it may be up for an hour. 30 Hz is smooth for a camera that moves
+   0.03 rad/s and still half the heat of running it at play rate. */
+const AWAY_HZ = 30;
 
 /* Skip whole rAF callbacks rather than sleeping inside one. A 30 Hz cap on a
    60 Hz display means drawing every other frame and letting the SoC idle in
@@ -638,7 +796,8 @@ const PANEL_HZ = 20;
 function frame(now) {
   requestAnimationFrame(frame);
   const dtRaw = (now - last) / 1000;
-  const cap = App.state === ST.PLAY ? (App.settings.fpsCap | 0) : PANEL_HZ;
+  const cap = App.state === ST.PLAY ? (App.settings.fpsCap | 0)
+    : App.state === ST.AWAY ? AWAY_HZ : PANEL_HZ;
   if (cap > 0 && dtRaw < 1 / cap - 0.002) return;
   last = now;
   let dt = dtRaw;
@@ -653,6 +812,25 @@ function tick(dt) {
 
   const input = App.input;
   const raw = input.poll();
+
+  /* See exitAway(). One frame, one click, thrown away. */
+  if (App.swallowClick) {
+    App.swallowClick = false;
+    input.mouse.clicked = false; input.mouse.down = false;
+  }
+
+  /* ---------------- away: any deliberate key ends the hold ----------------
+     Checked before — and instead of — the global keys, so Escape, Tab and H
+     resume the survey like every other key rather than opening a panel behind
+     a message that is no longer on screen.
+
+     Only the keyboard is read here. `mouse.clicked` is a latch that survives
+     until a frame consumes it, and the click that opened the pause sheet is
+     often still sitting in it, which would dismiss the away screen on the
+     first frame it appeared. Pointer dismissal is a window listener instead. */
+  if (App.state === ST.AWAY) {
+    if (App.awayT > AWAY_ARM_S && input.pressed.size) exitAway();
+  } else {
 
   /* ---------------- global keys ---------------- */
   if (input.hit('Escape')) {
@@ -671,8 +849,10 @@ function tick(dt) {
     if (!App.settings.hudOn) App.hud.setTray(false);
     App.hud.el.tray.style.opacity = App.settings.hudOn ? '' : '0';
   }
+  }
 
   if (playing) stepWorld(dt, raw, input);
+  else if (App.state === ST.AWAY) awayWorld(dt);
   else if (App.state !== ST.BOOT) idleWorld(dt);
 
   /* ---------------- sun bearing on screen, for the flare ---------------- */
@@ -903,7 +1083,7 @@ function stepWorld(dt, raw, input) {
   props.update(dt, App.elapsed, engine.camera);
   game.update(dt, ctl, input);
   rig.update(dt, rover, {
-    lookX: raw.lookX, lookY: raw.lookY, zoom: raw.zoom, looking: raw.looking,
+    lookX: raw.lookX, lookY: raw.lookY, zoom: raw.zoom, zoomRate: raw.zoomRate, looking: raw.looking,
     boost: input.down('ShiftLeft', 'ShiftRight'),
     up: input.down('KeyQ'), down: input.down('KeyZ')
   }, photo ? { throttle: raw.throttle, steer: raw.steer } : { throttle: 0, steer: 0 });

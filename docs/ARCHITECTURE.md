@@ -622,6 +622,83 @@ with one of its two objectives already ticked and no way to un-tick it.
 
 ---
 
+## Standing off: zoom
+
+`CameraRig.dist` is the chase and orbit standoff, and it is stepped
+**multiplicatively** — `dist *= 1.16 ** notches`, clamped to `[2.6, 120]`.
+
+Upstream added a flat `0.9 m` per wheel notch, which is a different control at
+each end of its own range: a third of the distance at 3 m, and under one per
+cent at 100 m. A constant ratio is the same apparent change wherever you are,
+which is what every zoom that feels right does. The full range is about 26
+notches.
+
+The ceiling moved from 26 m to 120 m because 26 m is a chase distance, not a
+view: the rover is 2.5 m long, so 26 m frames the machine and roughly one
+crater of ground. At 120 m you can read the basin the rover is standing in —
+rim, ridge line, the pit. The camera's far plane is 26 km and the clipmap is
+built for a camera that moves, so nothing else had to change.
+
+Keys carry the same exponent as the wheel but arrive as a **rate**, not a
+count, so `input` reports them separately as `zoomRate` and the rig multiplies
+by `dt`. Mixing a per-frame count with a per-second rate in one field is only
+correct at one frame rate.
+
+`dist` does nothing in MAST (the head *is* the camera) or PHOTO (free fly).
+That is not a bug to fix — there is no standoff to change in either.
+
+## The away screen
+
+`ST.AWAY` is a paused world you can still watch.
+
+The pause sheet already stops the simulation. What it does not do is let you
+look at it: behind any panel the frame comes from `idleWorld()`, which cuts to
+the menu's slow orbit 150 m over the basin centre, so the rover you parked is
+nowhere on screen. `awayWorld()` keeps the machine in frame and puts nothing
+over it but the player's own text.
+
+**What is frozen:** `App.elapsed`, `sunAz`, the game clock, power, and the
+rover. `awayWorld()` touches none of them — that restraint *is* the feature,
+and it is the only thing separating this from `idleWorld()`.
+
+**What is not:** the camera, which orbits the rover at 0.03 rad/s — about three
+and a half minutes a revolution. This is not a cheat on "paused". The chase
+camera is not a real camera on a real rover, a distinction this project already
+made when it decided not to put the view behind the comms delay. A dead-still
+frame reads as a crashed tab; a slow drift reads as a hold.
+
+The orbit datums on `rig.yaw`, so entering is a drift from the view you already
+had rather than a cut, and its radius is `clamp(rig.dist * 1.25, 9, 60)` —
+carrying the operator's zoom, but framed: at the 2.6 m floor an orbit is a
+wheel inspection, and past 60 m the rover is a speck. On exit, `rig.first` is
+set so the chase seat snaps back instead of swooping in from 40 m out.
+
+Three details that are load-bearing rather than decorative:
+
+- **`.away` is not an `.overlay`.** That class exists to put a scrim and a 7 px
+  blur between the player and the world. Here the world is the point, so the
+  background is a vertical gradient — heaviest under the type, nearly clear
+  across the horizon — and the element is `pointer-events:none`. It is a
+  caption over the basin, not a surface.
+- **Dismissal reads the keyboard only.** `mouse.clicked` is a latch that
+  survives until a frame consumes it, so the click that opened the pause sheet
+  is usually still sitting in it and would dismiss the screen on its first
+  frame. Pointer dismissal is a `window` listener instead, and an `AWAY_ARM_S`
+  window swallows the keystroke that submitted the message.
+- **The composer stops its own keydowns propagating.** The game's key listener
+  is on `window`; without `stopPropagation()` typing `h` in the message field
+  toggles the HUD, and `Enter` counts as the any-key that dismisses the screen
+  it just raised.
+
+AWAY renders at `AWAY_HZ` (30), not `PANEL_HZ` (20). It is the one paused
+surface a player is actually looking at, and it may be up for an hour — still
+half the heat of running it at play rate.
+
+The message persists in settings, because whoever puts up an away message tends
+to put up the same one. The button is hidden when SYSTEMS is opened from the
+main menu: `exitAway()` goes to `ST.PLAY`, and from the menu that is a game
+nobody started.
+
 ## Offline
 
 `sw.js` caches an explicit shell list and serves cache-first for same-origin
