@@ -655,8 +655,18 @@ Everything else gets an hour (a day for icons) rather than a year, because
 none of these filenames carry a content hash. The service worker is the real
 cache; the CDN only has to not get in its way.
 
-`outputDirectory` is pinned to `.` so a framework detector cannot decide
-otherwise on some future deploy. There is no build step and `package.json`
-has no `build` script, so nothing runs — the repo root IS the site. Any other
-static host works the same way; the file is Vercel-shaped because that is
-where it is deployed, not because anything depends on Vercel.
+`framework` is pinned to `null` — the "Other" preset — and this is the part
+that actually matters. `outputDirectory: "."` alone was not enough: the first
+deploy read `package.json`'s `start` script, detected the Node preset, and
+logged *"Using server.js as the root entrypoint"*, which put `server.js` —
+the local dev server — behind every request. It answered `/` with its own
+`404 — not found` because on the build host the files it serves are not
+where it looks for them. `server.js` exists for `npm start` and nothing else;
+a host that runs it is a host that has misread the project.
+
+So the three build fields are all refusals rather than instructions:
+`framework: null` (do not detect one), `buildCommand: ""` and
+`installCommand: ""` (run nothing — there is no `build` script and no
+dependency to install), `outputDirectory: "."` (the repo root IS the site).
+Any other static host works the same way; the file is Vercel-shaped because
+that is where it is deployed, not because anything depends on Vercel.
