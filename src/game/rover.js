@@ -9,6 +9,7 @@
    ============================================================ */
 import * as THREE from 'three';
 import { UI } from '../ui/theme.js';
+import { SOIL, MARE, sinkageFor } from '../world/soil.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { clamp, sstep, lerp, makeRNG } from '../core/rng.js';
 import { MOON_G } from '../world/terrain.js';
@@ -54,6 +55,40 @@ export const DRIVE = {
 export const EARTH_RTT = 2.564;
 const WHEEL_I = 1.2;                        // kg·m² per wheel
 const MU_BASE = 0.88;                       // grousers bite; still well under asphalt
+
+/* ---------------- slip-sinkage ----------------
+   Upstream sinks the wheel as a function of LOAD alone, so holding the
+   throttle in soft ground digs a hole visually — the excavation field records
+   it — but not causally: the model never learns the wheel is deeper.
+
+   The well-documented real effect is that sinkage also grows with SLIP. A
+   spinning wheel excavates itself downward; Wong-Reece extends Bekker by
+   accounting for slip shifting where the peak normal stress sits under the
+   wheel. What matters here is not the stress distribution, it is that this
+   gives the player COUNTERPLAY. Upstream has burial with no rescue mechanic,
+   which is a dead end rather than a hazard. Ease off, slip drops, sinkage
+   stops growing and then relaxes. That one change converts it.
+
+   `slipSink` integrates rather than multiplying, which is the whole point:
+   a multiplier is instantaneous and reversible the moment the number changes,
+   an integral is a hole you dug and have to drive out of.
+
+   Time constant 1/SLIP_RELAX = 1 s, so about three seconds of easing off
+   recovers most of it. Deliberately not instant and deliberately not
+   permanent.
+
+   SLIP_DIG is set from where the integral settles, not from a rate that
+   sounded right: equilibrium is SLIP_DIG · excess² · dig / SLIP_RELAX, so at
+   full slip that is 77 mm on mare, 120 mm on talus and 178 mm in soft fill.
+   Add the static term and soft fill reaches the cap — past the axle, and the
+   only way out is patience. Mare tops out under a tenth of a metre, which is
+   a rut you notice and not a hole you live in. */
+const SLIP_DEAD = 0.12;        // slip below this does not excavate
+const SLIP_DIG = 0.10;         // m/s of sinkage at full slip on mare
+const SLIP_RELAX = 1.0;        // 1/s — how fast it fills back in
+const SLIP_SINK_MAX = 0.30;
+const SINK_STATIC_MAX = 0.18;  // ceiling on the static Bekker term alone
+const SINK_MAX = 0.34;         // total; DIG_CAP in terrain.js is 0.48
 const K_SLIP = 5200, K_LAT = 6400;          // tyre stiffnesses, N per m/s of slip
 const YAW_ASSIST = 2600;                    // N*m of steering authority from the CMGs
 /* arm: shoulder->elbow, elbow->bit tip, and the reach envelope it can service */
@@ -249,6 +284,8 @@ export class Rover {
         contact: false, normal: new THREE.Vector3(0, 1, 0),
         worldPos: new THREE.Vector3(), lastGround: new THREE.Vector3(),
         slipLong: 0, slipLat: 0, load: 0, sink: 0,
+        // sinkage the wheel dug for itself, and what it is standing in
+        slipSink: 0, soil: MARE,
         obj: null, hub: null
       });
     }
@@ -257,6 +294,7 @@ export class Rover {
     this.throttle = 0; this.brake = 0; this.steerInput = 0;
     this.headlights = false; this.lampPower = 0;
     this.powerScale = 1;                     // set from gameplay each frame
+    this.soilUnit = MARE;                    // ground under the loaded wheels
     this.mastYaw = 0; this.mastPitch = 0;
     this.armDeploy = 0; this.drillSpin = 0; this.drilling = false;
     // operator-aimed arm: swing about the shoulder, reach along it, and the drop
@@ -596,6 +634,13 @@ export class Rover {
   step(dt, ctl, terrain) {
     const SUB = 6, h = Math.min(dt, 0.05) / SUB;
     for (let s = 0; s < SUB; s++) this._substep(h, ctl, terrain);
+    /* What the machine as a whole is standing in: the unit under the most
+       heavily loaded wheel in contact, which is the one deciding whether you
+       are going anywhere. Read by the HUD, the audio mix and the excavation
+       rate, so all three agree with the wheel that matters. */
+    let bestLoad = -1, unit = MARE;
+    for (const w of this.wheels) if (w.contact && w.load > bestLoad) { bestLoad = w.load; unit = w.soil; }
+    this.soilUnit = unit;
     this.sync();
   }
 
@@ -649,6 +694,8 @@ export class Rover {
       w.compVel = compVel; w.comp = comp;
 
       if (!w.contact) { w.load = 0; w.slipLat = 0; w.slipLong = 0; w.sink = 0;
+        // airborne wheels are not digging, and the hole relaxes without them
+        w.slipSink = Math.max(0, w.slipSink - SLIP_RELAX * w.slipSink * dt);
         // free wheel spins down slowly
         w.spinVel -= Math.sign(w.spinVel) * Math.min(Math.abs(w.spinVel), 0.7 * dt);
         w.spin += w.spinVel * dt;
@@ -678,17 +725,33 @@ export class Rover {
       const cv = _p10.copy(this.vel).add(_p11.crossVectors(this.omega, cp));
       const vLong = cv.dot(wf), vLat = cv.dot(wr);
 
-      /* ---- sinkage ----
-         Contact pressure over the bearing strength of the top few centimetres
-         of regolith (~12 kPa). Apollo's rover sank one to two centimetres and
-         paid about 5 % of its weight in rolling resistance for it; anything
-         deeper and the machine simply would not have moved. */
+      /* ---- sinkage: Bekker form, per soil unit, plus what slip digs ----
+         Static term is z = (p/K)^(1/n) over the unit under THIS wheel, so the
+         six wheels can be standing in three different materials — which they
+         are, every time you clip the edge of a soft patch. See soil.js for
+         where K and n come from and why they are effective rather than
+         bevameter values.
+
+         The slip term integrates: excavation while the wheel is slipping,
+         relaxation while it is not. Squared in the excess so a wheel barely
+         over the threshold barely digs, and a wheel at full spin digs hard. */
+      const unit = terrain.soilAt(probe.x, probe.z);
+      const S = SOIL[unit] || SOIL[MARE];
+      w.soil = unit;
       const pressure = fs / (WHEEL_W * 0.42);                  // N/m² of contact patch
-      w.sink = 0.10 * clamp(pressure / 12000, 0, 1);
+      const zStatic = Math.min(SINK_STATIC_MAX, sinkageFor(unit, pressure));
+      const excess = Math.max(0, w.slipLong - SLIP_DEAD);
+      const digRate = SLIP_DIG * excess * excess * S.dig;
+      w.slipSink = clamp(w.slipSink + (digRate - w.slipSink * SLIP_RELAX) * dt, 0, SLIP_SINK_MAX);
+      w.sink = Math.min(SINK_MAX, zStatic + w.slipSink);
       const rr = (0.045 + w.sink * 1.2) * fs;
 
-      /* ---- drive / brake torque ---- */
-      const mu = MU_BASE * (1 - 0.30 * sstep(0.0, 0.09, w.sink));
+      /* ---- drive / brake torque ----
+         Friction is the unit's own, and it falls away as the wheel goes down —
+         which closes the loop: less grip means more slip means more sinkage.
+         The loop is bounded by SLIP_SINK_MAX and broken by lifting off, and
+         traction control breaks it before it starts. */
+      const mu = MU_BASE * S.mu * (1 - 0.42 * sstep(0.0, 0.11, w.sink));
       const maxF = mu * fs;
       let throttleT = ctl.throttle * MOTOR_TORQUE * this.powerScale *
         (1 - sstep(DRIVE.maxSpeed * 0.82, DRIVE.maxSpeed, Math.abs(vLong)));

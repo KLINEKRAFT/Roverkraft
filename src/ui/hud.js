@@ -8,6 +8,7 @@ import { DRIVE } from '../game/rover.js';
 import { PLAYABLE_R, MACRO_RES, MACRO_EXT } from '../world/terrain.js';
 import { clamp, sstep } from '../core/rng.js';
 import { UI, alpha, rgbOf, type } from './theme.js';
+import { SOIL, MARE, EJECTA, TALUS, TRAP } from '../world/soil.js';
 
 const $ = (id) => document.getElementById(id);
 const MAP_EXT = 1020;                    // metres shown across the minimap base
@@ -329,7 +330,14 @@ export class HUD {
     if (!this.mapBase) return;
     const zoom = this.mapZoom || 1.9;
     const span = MAP_EXT / zoom;
-    const px = rover.pos.x, pz = rover.pos.z;
+    /* The map is a telemetry product, not a window. Below the rim with no
+       relay chain there is no line of sight to anything, so the position on
+       it is the last one that got out — which is exactly why the chain is a
+       mission and not a chore. The ground-ahead band underneath keeps
+       working, because that one is the rover's own radar. */
+    if (game.uplink) { this._fix = { x: rover.pos.x, z: rover.pos.z }; }
+    const fix = game.uplink ? rover.pos : (this._fix || rover.pos);
+    const px = fix.x, pz = fix.z;
     const src = this.mapBase.width;
     const sx = ((px / MAP_EXT + 0.5) * src) - (span / MAP_EXT * src) / 2;
     const sy = ((pz / MAP_EXT + 0.5) * src) - (span / MAP_EXT * src) / 2;
@@ -374,10 +382,10 @@ export class HUD {
       poi(a.x, a.z, a.special || a.type === 'vein' ? UI.science : UI.data, null, 'dot');
 
     // rover
-    const dHome = Math.hypot(px - HOME.x, pz - HOME.z);
+    const dHome = Math.hypot(rover.pos.x - HOME.x, rover.pos.z - HOME.z);
     const hd = Math.atan2(rover.forward.x, -rover.forward.z);
     g.save(); g.translate(S / 2, S / 2); g.rotate(hd);
-    g.fillStyle = UI.bone;
+    g.fillStyle = game.uplink ? UI.bone : alpha(UI.bone, 0.30);
     g.beginPath(); g.moveTo(0, -7); g.lineTo(5, 6); g.lineTo(0, 3); g.lineTo(-5, 6); g.closePath(); g.fill();
     g.restore();
     // scan pulse
@@ -389,6 +397,16 @@ export class HUD {
     g.restore();
     g.strokeStyle = alpha(UI.bone, 0.16); g.lineWidth = 1;
     g.beginPath(); g.moveTo(S / 2, 0); g.lineTo(S / 2, S); g.moveTo(0, S / 2); g.lineTo(S, S / 2); g.stroke();
+    if (!game.uplink) {
+      g.fillStyle = alpha(UI.void, 0.62); g.fillRect(0, 0, S, S - 17);
+      g.fillStyle = UI.emergency; g.font = type(13); g.textAlign = 'center';
+      g.fillText('NO UPLINK', S / 2, S / 2 - 4);
+      g.fillStyle = alpha(UI.bone, 0.55); g.font = type(9);
+      g.fillText('LAST FIX', S / 2, S / 2 + 12);
+      g.textAlign = 'left';
+    }
+
+    this._drawAhead(rover, game, g, S);
 
     /* The map header is two slots, and on a phone they carry the two questions
        the compass strip and the clock used to answer: which way am I pointed,
@@ -406,6 +424,52 @@ export class HUD {
     if (scale !== this._mapScale) { this._mapScale = scale; this.el.mapScale.textContent = scale; }
   }
 
+  /* ---------------- the ground ahead ----------------
+     The radar's second job, and it lives with the MAP rather than with the
+     A-scope because it answers a navigation question, not a depth one — and
+     because the map is the one instrument that stays on the driving HUD on
+     every device. A soft patch you can see coming is a hazard; one you cannot
+     is a load screen.
+
+     Two readings in one band: the fill is the soil unit for the next forty
+     metres along the heading, and the trace over it is the ground's own
+     profile. The trace is what gets you down the bench and across the pit
+     floor with the lamps off, which is the only way to read the column
+     without destroying it. */
+  _drawAhead(rover, game, g, S) {
+    if (!rover || !game.terrain) return;
+    const AHEAD = 40, BH = 17, y0 = S - BH, n = 40;
+    const fx = rover.forward.x, fz = rover.forward.z;
+    const h0 = game.terrain.heightAt(rover.pos.x, rover.pos.z);
+    g.fillStyle = alpha(UI.void, 0.86);
+    g.fillRect(0, y0, S, BH);
+    let worst = MARE;
+    for (let i = 0; i < n; i++) {
+      const d = (i / n) * AHEAD;
+      const u = game.terrain.soilAt(rover.pos.x + fx * d, rover.pos.z + fz * d);
+      if (u === TRAP) worst = TRAP; else if (u === TALUS && worst !== TRAP) worst = TALUS;
+      g.fillStyle = u === MARE ? alpha(UI.bone, 0.12)
+                  : u === TRAP ? alpha(UI.emergency, 0.80)
+                  : u === EJECTA ? alpha(UI.bone, 0.34) : alpha(UI.science, 0.34);
+      g.fillRect(i / n * S, y0, S / n + 0.7, BH);
+    }
+    // profile: +-6 m of relief across the band, clipped
+    g.strokeStyle = UI.data; g.lineWidth = 1.2;
+    g.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const d = (i / n) * AHEAD;
+      const dh = game.terrain.heightAt(rover.pos.x + fx * d, rover.pos.z + fz * d) - h0;
+      const y = y0 + BH * 0.5 - clamp(dh / 6, -1, 1) * (BH * 0.42);
+      i ? g.lineTo(i / n * S, y) : g.moveTo(0, y);
+    }
+    g.stroke();
+    g.strokeStyle = alpha(UI.bone, 0.20); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y0 + 0.5); g.lineTo(S, y0 + 0.5); g.stroke();
+    g.font = type(8); g.textAlign = 'left';
+    g.fillStyle = worst === TRAP ? UI.emergency : alpha(UI.bone, 0.38);
+    g.fillText(worst === TRAP ? 'SOFT FILL AHEAD' : `${AHEAD} m AHEAD`, 4, y0 - 4);
+  }
+
   drawWheels(rover) {
     const g = this.cv.wheel, W = 236, H = 130;
     g.clearRect(0, 0, W, H);
@@ -420,26 +484,46 @@ export class HUD {
       g.fillStyle = w.slipLong > 0.25 ? alpha(UI.science, 0.25 + w.slipLong * 0.6)
                                       : alpha(UI.data, 0.16 + load * 0.5);
       g.fillRect(cx - 25, cy + 14 - Math.max(2, load * 28), 50, Math.max(2, load * 28));
-      // sinkage bar
-      g.fillStyle = alpha(UI.science, 0.55);
-      g.fillRect(cx - 25, cy + 14, 50 * clamp(w.sink / 0.11, 0, 1), 2);
+      /* Sinkage, in two parts, because they mean different things. The dim
+         bar is the static Bekker term — how far this wheel sits into this
+         soil under this load, which you cannot do anything about. The bright
+         one is what SLIP dug, which you can: ease off and it relaxes. A
+         player who learns to read the second bar has learned the mechanic. */
+      const st = clamp((w.sink - w.slipSink) / 0.30, 0, 1);
+      const sl = clamp(w.sink / 0.30, 0, 1);
+      g.fillStyle = alpha(UI.bone, 0.22);
+      g.fillRect(cx - 25, cy + 14, 50 * sl, 2);
+      g.fillStyle = w.slipSink > 0.05 ? UI.science : alpha(UI.bone, 0.45);
+      g.fillRect(cx - 25, cy + 14, 50 * st, 2);
+      if (w.slipSink > 0.005) {
+        g.fillStyle = w.sink > 0.22 ? UI.emergency : UI.science;
+        g.fillRect(cx - 25 + 50 * st, cy + 13, 50 * (sl - st), 4);
+      }
       g.fillStyle = alpha(UI.bone, 0.55);
       g.fillText(['F', 'M', 'A'][w.axle] + (w.side < 0 ? 'L' : 'R'), cx - 24, cy - 6);
+      // the unit under THIS wheel: six wheels can be in three materials at once
+      g.fillStyle = w.soil === MARE ? alpha(UI.bone, 0.30)
+                  : w.soil === TRAP ? UI.emergency : alpha(UI.science, 0.85);
+      g.textAlign = 'right';
+      g.fillText((SOIL[w.soil] || SOIL[MARE]).name[0], cx + 24, cy - 6);
+      g.textAlign = 'left';
     });
   }
 
-  drawGPR(game) {
+  drawGPR(game, rover) {
     const g = this.cv.gpr, W = 290, H = 130;
     g.clearRect(0, 0, W, H);
-    
+
     // depth grid
+    const TOP = 0, DH = H;
+    void rover;
     g.strokeStyle = alpha(UI.data, 0.12); g.lineWidth = 1;
     for (let i = 1; i < 6; i++) {
-      const y = i / 6 * H;
+      const y = TOP + i / 6 * DH;
       g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
     }
     g.fillStyle = alpha(UI.data, 0.42); g.font = type(7.5); g.textAlign = 'left';
-    for (let i = 1; i < 6; i++) g.fillText(`${i * 2} m`, 3, i / 6 * H - 2);
+    for (let i = 1; i < 6; i++) g.fillText(`${i * 2} m`, 3, TOP + i / 6 * DH - 2);
 
     // A-scope trace: noise, plus a real reflector where an anomaly sits below
     const N = this.gprTrace.length;
@@ -459,7 +543,7 @@ export class HUD {
     g.lineWidth = 1.2;
     g.beginPath();
     for (let i = 0; i < N; i++) {
-      const y = i / N * H;
+      const y = TOP + i / N * DH;
       const x = W / 2 + this.gprTrace[i] * W * 0.34;
       i ? g.lineTo(x, y) : g.moveTo(x, y);
     }
@@ -521,7 +605,7 @@ export class HUD {
     if (this.refVisible) {
       this.drawCompass(rover, game, sky);
       this.drawWheels(rover);
-      this.drawGPR(game);
+      this.drawGPR(game, rover);
     }
 
     // discovery banner
@@ -557,7 +641,11 @@ export class HUD {
       ['GPR', game.scan.active],
       ['DRILL', game.drill.active],
       ['TC', game.tc !== false],
-      [`RELAY ${game.relaysPlaced}/3`, game.relaysPlaced > 0]
+      [`RELAY ${game.relaysPlaced}/3`, game.relaysPlaced > 0],
+      [game.uplink ? 'UPLINK' : 'NO UPLINK', game.uplink],
+      [`RECORD ${Math.max(0, 100 - Math.round(game.recordLoss))}%`, game.recordLoss < 1],
+      // what the loaded wheels are standing in; lit when it is not the baseline
+      [`GROUND ${(SOIL[rover.soilUnit] || SOIL[MARE]).name}`, rover.soilUnit !== MARE]
     ];
     const sig = chips.map(c => c[0] + c[1]).join('|');
     if (sig !== this._chipSig) {

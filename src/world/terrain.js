@@ -15,6 +15,7 @@
    ============================================================ */
 import * as THREE from 'three';
 import { fbm, ridged, vnoise, hash2i, clamp, sstep, lerp } from '../core/rng.js';
+import { SOIL, SOIL_EXT, SOIL_RES, MARE, EJECTA, TALUS, TRAP, soilAt } from './soil.js';
 
 /* ---------------- world constants (metres) ---------------- */
 export const MOON_G = 1.62;
@@ -27,6 +28,72 @@ export const SUNMASK_EXT = 1500, SUNMASK_RES = 1024;
 
 export const RIM_R = 470, RIM_W = 74;                 // crater rim wall
 export const PLAYABLE_R = 432;                        // soft mission fence
+
+/* ---------------- the collapse ----------------
+   A rimless pit in the crown of the central shield: a hole in the roof of a
+   drained lava channel, not an impact crater. That is what LRO finds in
+   Philolaus — small rimless depressions strung along a buried channel, with
+   completely shadowed interiors. The real candidates are 15 to 30 m across;
+   this one is 116, because you have to be able to drive into it.
+
+   THE DEPTH IS SET BY THE SHADOW, not by taste. The sun at 72.1° north never
+   climbs past about 19°, so for the floor to be in permanent darkness even at
+   maximum elevation the far rim has to subtend more than that from the floor:
+
+       atan(PIT_D / 2·PIT_R) = atan(64 / 116) = 28.9° > 18.6°
+
+   Cut the depth and a crescent of the floor is lit at high sun, and the whole
+   point of the place — that it is a cold trap, that nothing here has ever been
+   warmed — goes with it.
+
+   The walls are near-vertical (0.74 R to 1.0 R, about 77°) so that the helical
+   bench cut into them reads as a bench and not as a shallower part of a
+   uniform slope. There is exactly one way in. */
+export const PIT_X = 0, PIT_Z = 0;
+export const PIT_R = 58, PIT_D = 64;
+const PIT_FLOOR_T = 0.74;      // fraction of PIT_R that is flat floor
+const RAMP_W = 10;             // half-width of the bench's flat top, metres
+const RAMP_A0 = -2.05;         // entry azimuth, radians
+
+/** Height OFFSET of the collapse. Zero outside it, so it composes with
+    whatever the basin was doing there.
+
+    Splatted straight into the macro field rather than evaluated inside
+    baseHeight(), for the same reason the craters are: baseHeight is sampled at
+    1.875 m and Catmull-Rom upsampled, and a 77° wall through that filter rings
+    into a lip at the top and a moat at the bottom. Craters learned this first;
+    see the shark-fin note on the rille. */
+export function pitH(x, z) {
+  const dx = x - PIT_X, dz = z - PIT_Z;
+  const d = Math.hypot(dx, dz);
+  if (d > PIT_R * 1.25) return 0;
+
+  const t = d / PIT_R;
+  const inside = 1 - sstep(PIT_FLOOR_T, 1.0, t);
+  let h = -PIT_D * inside;
+
+  /* One helical bench, descending a single turn and spiralling slightly
+     inward so it stays cut into the wall the whole way down. It has to be
+     single-turn: the height field is a pure function of position and an angle
+     is not single-valued over more than one revolution.
+
+     The amplitude fades in over the first tenth of the turn, which is what
+     makes the seam continuous — at p = 0 exactly the bench contributes
+     nothing, so both sides of the entry ray read the rim. */
+  let a = Math.atan2(dz, dx) - RAMP_A0;
+  a -= Math.floor(a / (Math.PI * 2)) * (Math.PI * 2);
+  const p = a / (Math.PI * 2);
+  const rR = PIT_R * (1.02 - 0.20 * p);
+  const hR = -PIT_D * (0.02 + 0.98 * p);
+  /* Super-Gaussian, not Gaussian. A Gaussian band has no flat part at all —
+     measured, the bench read as an 18° cross-slope with a dip down its middle
+     and the chassis peaked at 40° of tilt driving it. The fourth power gives a
+     genuinely flat top about twelve metres wide with shoulders that fall away
+     quickly, which is what a bench cut into a wall actually looks like. */
+  const band = Math.exp(-Math.pow(Math.abs(d - rR) / RAMP_W, 4)) * sstep(0.0, 0.10, p);
+  h = h * (1 - band) + hR * band;
+  return h;
+}
 
 const DET_AMP = 0.38, DET_AMP2 = 0.105, DET_SCALE2 = 4.33;
 const BERM_OUT = 1.72;      // berm reaches this multiple of the rut half-width
@@ -87,11 +154,14 @@ export function baseHeight(x, z) {
   h += sstep(RIM_R + 130, RIM_R + 900, r) *
        (ridged(x * 0.00212, z * 0.00212, 5, 2.1, 0.55, 5) - 0.30) * 190;
 
-  // Central massif — crustal rebound after the impact. Wide rather than tall:
-  // a narrow peak of the same height would exceed 35° and simply could not be
-  // driven, and the whole last mission happens on top of it.
+  /* Central shield — crustal rebound, and the roof of the drained channel.
+     Lower than the massif it replaces (64 m + 26 m of ridge) because the last
+     mission no longer happens on TOP of it: the collapse is cut into its
+     crown, and a taller shield would only make the drive to the lip longer
+     without making the lip more interesting. The pit itself is splatted into
+     the macro field afterwards; see pitH(). */
   const cm = Math.exp(-Math.pow(r / 110, 2));
-  h += cm * (64 + 26 * ridged(x * 0.0195, z * 0.0195, 4, 2.1, 0.5, 61));
+  h += cm * (34 + 14 * ridged(x * 0.0195, z * 0.0195, 4, 2.1, 0.5, 61));
 
   h += rilleH(x, z);
   return h;
@@ -280,7 +350,131 @@ export function* bakeTerrain(report) {
       }
     }
     done++;
-    if ((ji & 127) === 0) { report(0.36 + 0.26 * (done / total), `impact record · ${done}/${total}`); yield; }
+    if ((ji & 127) === 0) { report(0.36 + 0.23 * (done / total), `impact record · ${done}/${total}`); yield; }
+  }
+
+  /* --- 3b-i. the collapse ---
+     Straight into the macro grid at 0.586 m/texel, where a near-vertical wall
+     is fourteen texels of honest step rather than an upsampling artefact. */
+  report(0.59, 'the collapse'); yield;
+  {
+    const R = PIT_R * 1.25;
+    const gx0 = Math.max(0, Math.floor((PIT_X - R) / px + half));
+    const gx1 = Math.min(MACRO_RES - 1, Math.ceil((PIT_X + R) / px + half));
+    const gz0 = Math.max(0, Math.floor((PIT_Z - R) / px + half));
+    const gz1 = Math.min(MACRO_RES - 1, Math.ceil((PIT_Z + R) / px + half));
+    for (let gz = gz0; gz <= gz1; gz++) {
+      const wz = (gz - half + 0.5) * px;
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const wx = (gx - half + 0.5) * px;
+        macro[gz * MACRO_RES + gx] += pitH(wx, wz);
+      }
+    }
+  }
+
+  /* --- 3b-ii. the soil map ---------------------------------------------
+     Four units, painted over the same extent as the macro field at one texel
+     per 1.17 m. Nothing here touches HEIGHT, so it is outside the
+     physics/pixels contract entirely — the CPU wheel model and the GPU tint
+     both read this grid nearest, and neither can drift from the other.
+
+     Order matters: the base pass claims the steep ground and the soft fill,
+     then the ejecta pass paints over MARE only. A young crater's walls stay
+     talus, because a young crater's walls ARE talus. */
+  report(0.60, 'reading the ground'); yield;
+  const soil = new Uint8Array(SOIL_RES * SOIL_RES);
+  {
+    const spx = SOIL_EXT / SOIL_RES;
+    const shalf = SOIL_RES * 0.5;
+    const SLOPE_BASE = 12;                    // metres, half-baseline for slope
+    // nearest into the macro field: 0.586 m/texel under a 1.17 m/texel grid,
+    // so a bilinear here would cost five million filtered reads to resolve
+    // detail the soil map cannot represent anyway
+    const mAt = (wx, wz) => {
+      const u = clamp(((wx / MACRO_EXT + 0.5) * MACRO_RES) | 0, 0, MACRO_RES - 1);
+      const v = clamp(((wz / MACRO_EXT + 0.5) * MACRO_RES) | 0, 0, MACRO_RES - 1);
+      return macro[v * MACRO_RES + u];
+    };
+    for (let gz = 0; gz < SOIL_RES; gz++) {
+      const wz = (gz - shalf + 0.5) * spx;
+      for (let gx = 0; gx < SOIL_RES; gx++) {
+        const wx = (gx - shalf + 0.5) * spx;
+        /* LANDFORM slope, over a 7 m baseline rather than the 1.17 m texel.
+           Measured: at texel scale the macro field's own crater pitting reads
+           past 16 degrees over 55 % of the drivable basin, and at a 7 m
+           baseline still 37 % — the surface is saturated with metre-scale
+           craters, and their walls are not talus, they are texture. Twelve
+           metres averages a tier-3 crater away and leaves the landforms that
+           actually hold loose material: the rim wall, its terraces, and the
+           walls of the craters big enough to have them.
+
+           The 26° threshold is the other half of the same argument. Lunar
+           regolith's angle of repose is around 30-35°, so material only rests
+           LOOSE where the slope is approaching it. At 20° a third of the
+           basin came back as talus, which is not what talus means — it is
+           what a cratered plain means. */
+        const e = SLOPE_BASE;
+        const sx = (mAt(wx + e, wz) - mAt(wx - e, wz)) / (2 * e);
+        const sz = (mAt(wx, wz + e) - mAt(wx, wz - e)) / (2 * e);
+        const slope = Math.atan(Math.hypot(sx, sz)) * 57.29578;
+        const r = Math.hypot(wx, wz);
+        let unit = MARE;
+        if (slope > 26 || r > RIM_R - RIM_W * 0.9) {
+          unit = TALUS;                       // rim wall, terraces, crater walls
+        } else {
+          /* Soft fill ponds in old shallow depressions and is nearly flat, so
+             there is no relief to warn you — which is the entire hazard. Two
+             octaves for ragged edges; one made suspiciously round patches. */
+          const soft = vnoise(wx * 0.0075, wz * 0.0075, 771) * 0.66 +
+                       vnoise(wx * 0.021, wz * 0.021, 772) * 0.34;
+          if (slope < 5.5 && r > 58 && r < PLAYABLE_R - 26 && soft > 0.600) unit = TRAP;
+        }
+        soil[gz * SOIL_RES + gx] = unit;
+      }
+      if ((gz & 63) === 0) { report(0.60 + 0.03 * (gz / SOIL_RES), 'reading the ground'); yield; }
+    }
+
+    /* Ejecta blankets and blocky floors, from the SAME crater list the height
+       field was splatted with — so the firm ground is visibly the ray system
+       of a young crater rather than a decorative texture. */
+    let ej = 0;
+    for (const [cx, cz, r, age] of jobs) {
+      if (age > 0.45 || r < 6.5) continue;
+      const R2 = r * (1.0 + 0.85 * (1 - age));
+      const gx0 = Math.max(0, Math.floor((cx - R2) / spx + shalf));
+      const gx1 = Math.min(SOIL_RES - 1, Math.ceil((cx + R2) / spx + shalf));
+      const gz0 = Math.max(0, Math.floor((cz - R2) / spx + shalf));
+      const gz1 = Math.min(SOIL_RES - 1, Math.ceil((cz + R2) / spx + shalf));
+      for (let gz = gz0; gz <= gz1; gz++) {
+        const wz = (gz - shalf + 0.5) * spx;
+        for (let gx = gx0; gx <= gx1; gx++) {
+          const i = gz * SOIL_RES + gx;
+          if (soil[i] !== MARE) continue;     // walls stay talus, fill stays fill
+          const wx = (gx - shalf + 0.5) * spx;
+          const d = Math.hypot(wx - cx, wz - cz) / r;
+          // ragged rim, same trick the crater splat uses on the height field
+          const wob = 1 + 0.16 * (vnoise(Math.atan2(wz - cz, wx - cx) * 2.9 + cx, cz * 0.1, 811) - 0.5) * 2;
+          const t = d * wob;
+          if (t < 0.55 || (t > 0.92 && t < R2 / r)) soil[i] = EJECTA;
+        }
+      }
+      ej++;
+    }
+    /* The pit is not made of basin floor. The floor is ponded impact melt
+       under two centimetres of dust — glass, and firm; the bench is the talus
+       that came off the walls when the roof went, which is why it is drivable
+       at all and why it is the least reassuring surface in the game. */
+    for (let gz = 0; gz < SOIL_RES; gz++) {
+      const wz = (gz - shalf + 0.5) * spx;
+      if (Math.abs(wz - PIT_Z) > PIT_R * 1.1) continue;
+      for (let gx = 0; gx < SOIL_RES; gx++) {
+        const wx = (gx - shalf + 0.5) * spx;
+        const t = Math.hypot(wx - PIT_X, wz - PIT_Z) / PIT_R;
+        if (t > 1.06) continue;
+        soil[gz * SOIL_RES + gx] = t < PIT_FLOOR_T * 0.94 ? EJECTA : TALUS;
+      }
+    }
+    report(0.64, `soil units · ${ej} ejecta blankets`); yield;
   }
 
   /* --- 3c. far horizon field --- */
@@ -337,7 +531,7 @@ export function* bakeTerrain(report) {
   const farMips = buildMips(far, FAR_RES);
   report(0.76, 'filtering for distance'); yield;
 
-  return { macro, far, det, macroMips, farMips };
+  return { macro, far, det, soil, macroMips, farMips };
 }
 
 /* ============================================================
@@ -405,6 +599,10 @@ export class Terrain {
        missing we filter in the shader instead. */
     this.manualBilinear = caps.floatLinear === false;
     this.macro = baked.macro; this.far = baked.far; this.det = baked.det;
+    /* The soil map. Quality-independent like the height fields, so a tier
+       change never re-bakes it, and it is nearest-sampled on both sides so the
+       wheel model and the ground it is drawn on read the same cell. */
+    this.soil = baked.soil;
     this.quality = quality;
 
     /* ---- data textures ----
@@ -425,6 +623,16 @@ export class Terrain {
     this.texMacro = mk(this.macro, MACRO_RES, false, baked.macroMips);
     this.texFar = mk(this.far, FAR_RES, false, baked.farMips);
     this.texDetail = mk(this.det, DET_RES, true, null);
+
+    /* Soil units as a byte per texel. NEAREST on purpose: a filtered soil
+       index is a soil that does not exist — halfway between talus and soft
+       fill is not a material, it is an artefact. */
+    this.texSoil = new THREE.DataTexture(this.soil, SOIL_RES, SOIL_RES,
+      THREE.RedFormat, THREE.UnsignedByteType);
+    this.texSoil.magFilter = this.texSoil.minFilter = THREE.NearestFilter;
+    this.texSoil.wrapS = this.texSoil.wrapT = THREE.ClampToEdgeWrapping;
+    this.texSoil.generateMipmaps = false;
+    this.texSoil.needsUpdate = true;
 
     /* ---- excavation field (CPU authoritative, uploaded as dirty rects) ----
        0.25 m per texel at HIGH, which is what it takes for a 0.30 m wheel to
@@ -546,6 +754,35 @@ export class Terrain {
   /** slope in degrees */
   slopeAt(x, z) { const n = this.normalAt(x, z, 0.9, _v3a); return Math.acos(clamp(n.y, -1, 1)) * 57.29578; }
 
+  /** Which soil unit is under this point. Nearest, exactly as the shader. */
+  soilAt(x, z) { return soilAt(this.soil, x, z); }
+
+  /** Stamp a circle of the map to one unit.
+
+      Exists so the code that OWNS a location can declare what it is standing
+      on, rather than terrain.js carrying a second copy of every important
+      coordinate. The sled pad is levelled by Props at boot; it is also, by
+      construction, not somewhere the player should sink. */
+  paveSoil(x, z, radius, unit) {
+    const spx = SOIL_EXT / SOIL_RES, half = SOIL_RES * 0.5;
+    const g0x = Math.max(0, Math.floor((x - radius) / spx + half));
+    const g1x = Math.min(SOIL_RES - 1, Math.ceil((x + radius) / spx + half));
+    const g0z = Math.max(0, Math.floor((z - radius) / spx + half));
+    const g1z = Math.min(SOIL_RES - 1, Math.ceil((z + radius) / spx + half));
+    const r2 = radius * radius;
+    for (let gz = g0z; gz <= g1z; gz++) {
+      const wz = (gz - half + 0.5) * spx;
+      for (let gx = g0x; gx <= g1x; gx++) {
+        const wx = (gx - half + 0.5) * spx;
+        const dx = wx - x, dz = wz - z;
+        if (dx * dx + dz * dz <= r2) this.soil[gz * SOIL_RES + gx] = unit;
+      }
+    }
+    // The DataTexture is constructed OVER this.soil, so unlike texDent there
+    // is no scratch-blit path and no stale snapshot: re-uploading is correct.
+    this.texSoil.needsUpdate = true;
+  }
+
   /** CPU sun visibility (0 shadow .. 1 lit) — used to light the rover.
       Marches the macro field only, exactly like the baked GPU mask does. */
   sunVis(x, z, sun) {
@@ -574,6 +811,12 @@ export class Terrain {
       uTrail: { value: this.trailRT.texture },
       uSunMask: { value: this.sunRT.texture },
       uAlbedoTex: { value: null },
+      uSoil: { value: this.texSoil },
+      uSoilExt: { value: SOIL_EXT },
+      // one entry per unit, in soil.js order. Declared here in the literal
+      // because buildClipmap() snapshots this map once and a uniform added
+      // afterwards never reaches a single ring.
+      uSoilTint: { value: SOIL.map(u => new THREE.Vector3(u.tint[0], u.tint[1], u.tint[2])) },
       uConst: { value: new THREE.Vector4(MACRO_EXT, FAR_EXT, DET_TILE, DENT_EXT) },
       uConst2: { value: new THREE.Vector4(DET_AMP, DET_AMP2, DET_SCALE2, this.TRAIL_EXT) },
       uCamXZ: { value: new THREE.Vector3() },
@@ -625,7 +868,9 @@ export class Terrain {
       precision highp float;
       #include <packing>
       varying vec3 vW; varying vec3 vN; varying float vDent;
-      uniform sampler2D uSunMask, uAlbedoTex, uTrail;
+      uniform sampler2D uSunMask, uAlbedoTex, uTrail, uSoil;
+      uniform float uSoilExt;
+      uniform vec3 uSoilTint[4];
       uniform sampler2D uRShadow; uniform mat4 uRShadowMat;
       uniform float uRShadowOn, uRShadowTexel;
       uniform vec3 uSunDir, uSunCol, uAmbient, uEarthDir, uEarthCol;
@@ -666,6 +911,25 @@ export class Terrain {
         float speck = n2(vW.xz*11.9);
         vec3 base = vec3(0.148, 0.129, 0.104);
         vec3 albedo = base * mott * (0.87 + 0.17*varN + 0.11*g0) * (0.90 + 0.22*speck);
+
+        /* ---- soil unit ----
+           Firm ejecta is brighter because it is unweathered; soft fill is
+           darker because it is fine and porous. The difference is DELIBERATELY
+           small — this is a cue you learn to read, not a legend painted on the
+           ground, and the soft fill being hard to spot is the hazard.
+
+           The lookup position is jittered by about one texel so unit
+           boundaries are ragged instead of a 1.17 m staircase. The wheels read
+           the unjittered grid; the disagreement is bounded by one cell, which
+           is smaller than a wheel. */
+        vec2 sjit = vW.xz + (vec2(fb(vW.xz*0.55), fb(vW.xz*0.55 + 41.0)) - 0.5) * 2.2;
+        float sidx = texture2D(uSoil, clamp(sjit/uSoilExt + 0.5, 0.0008, 0.9992)).r * 255.0;
+        int si = int(sidx + 0.5);
+        vec3 stint = uSoilTint[0];
+        if (si == 1) stint = uSoilTint[1];
+        else if (si == 2) stint = uSoilTint[2];
+        else if (si == 3) stint = uSoilTint[3];
+        albedo *= stint;
         // freshly excavated material is brighter — unweathered, unsputtered
         albedo *= 1.0 + 0.62 * smoothstep(0.02, 0.55, vDent);
         /* ---- wheel tracks ----

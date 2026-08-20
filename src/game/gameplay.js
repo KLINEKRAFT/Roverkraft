@@ -5,16 +5,17 @@
    ============================================================ */
 import * as THREE from 'three';
 import { makeRNG, clamp, sstep, lerp } from '../core/rng.js';
-import { PLAYABLE_R } from '../world/terrain.js';
+import { PLAYABLE_R, PIT_X, PIT_Z, PIT_R, PIT_D } from '../world/terrain.js';
 import { HOME } from '../world/props.js';
 import { CODEX, SAMPLES, MISSIONS } from './lore.js';
 import { POWER_FLOOR, POWER_KNEE } from './rover.js';
 import { UI, hexOf } from '../ui/theme.js';
 
 export const STATION = { x: -236, z: 140 };
-/* The collapse. Phase 7 carves the hole; this is the point everything —
-   missions, map, compass, the vein drainage — agrees it is at. */
-export const PIT = { x: 0, z: 0 };
+/* The collapse. One coordinate, owned by terrain.js because terrain.js is
+   what carves it, and re-exported here because the missions, the map and the
+   compass all ask gameplay where things are. */
+export const PIT = { x: PIT_X, z: PIT_Z };
 
 /* Named points the mission data refers to. A mission says `poi: 'STATION'`
    rather than importing a coordinate, which is what lets lore.js be text and
@@ -88,6 +89,15 @@ export class Game {
     this.autoRecover = 0;
     this.flipTimer = 0;
     this.dangerTone = 0;
+    /* ---- the collapse ----
+       `inPit` is what the array, the uplink and the record all key off.
+       `recordLoss` is the fraction of the ice column your own lamps have
+       sublimed away: the pit is a cold trap, everything you light you lose,
+       and you cannot drive down there without light. That is the mission. */
+    this.inPit = false;
+    this.uplink = true;
+    this.recordLoss = 0;
+    this._pitFloorH = this.terrain.heightAt(PIT.x, PIT.z);
     this.buildAnomalies();
     if (freeRoam) {
       this.missionIdx = MISSIONS.length;
@@ -243,11 +253,17 @@ export class Game {
       const d = this.distTo(p.x, p.z);
       if (w.kind === 'far' && d > w.m) this.complete(o.id);
       else if (w.kind === 'near' && d < w.m) {
-        // optional height gate: "inside the pit" is not the same place as
-        // "standing on its rim", and both are within 40 m of the centre
-        const h = this.terrain.heightAt(this.rover.pos.x, this.rover.pos.z);
-        if (w.maxH !== undefined && h > w.maxH) continue;
-        if (w.minH !== undefined && h < w.minH) continue;
+        /* Optional height gate. "Inside the pit" is not the same place as
+           "standing on its rim", and both are within 60 m of the centre.
+
+           Expressed RELATIVE to the height at the point of interest rather
+           than as an absolute metre count, so it survives any change to the
+           basin's datum — an absolute number here would be a constant that
+           silently stops meaning anything the first time the terrain moves. */
+        if (w.within !== undefined) {
+          const h = this.terrain.heightAt(this.rover.pos.x, this.rover.pos.z);
+          if (Math.abs(h - this.terrain.heightAt(p.x, p.z)) > w.within) continue;
+        }
         this.complete(o.id);
       }
     }
@@ -264,10 +280,15 @@ export class Game {
       this.hud.showCard(this.mission);
       this.hud.missionDirty = true;
     } else {
+      const kept = Math.max(0, 100 - Math.round(this.recordLoss));
       this.hud.showCard({
         tag: 'OPERATION NORTHFIELD', name: 'TRANSMITTED',
+        _kept: kept,
         brief: `The uplink closed forty seconds ago. Whatever happens to the record now happens on Earth, in a building with a lobby and a receptionist and a legal department.\n\nYou are still here. The basin is still here. Four hundred metres west, under ninety metres of permanent shadow, a cold trap that has kept its post for three and a half million years is losing three quarters of a kelvin a decade from underneath.\n\nEleven months.`,
-        objectives: [{ id: '_', text: 'Free survey unlocked — the basin is yours' }]
+        objectives: [
+          { id: '_r', text: `${kept} % of the column reached the uplink intact` },
+          { id: '_', text: 'Free survey unlocked — the basin is yours' }
+        ]
       });
       this.freeRoam = true;
     }
@@ -506,6 +527,50 @@ export class Game {
     if (this.power > 30) this._lowWarned = false;
     this.dangerTone = clamp((1 - this.power / 40) * 0.6 + (1 - this.hull / 100) * 0.6, 0, 1);
 
+    /* ---- inside the collapse ----------------------------------------
+       Three consequences, and every one of them uses a system that was
+       already here:
+
+         no sun      the array does nothing, because sunVis is 0 down there
+         no sky      no line of sight to Earth, so the uplink is whatever the
+                     relay chain you built in the last mission can carry
+         no cold     your lamps warm the working face, and a cold trap that
+                     gets warmed stops being one
+
+       The third is the interesting one: you cannot drive in darkness and you
+       cannot read the column you came for with the lights on. */
+    {
+      const dPit = this.distTo(PIT.x, PIT.z);
+      const hRover = this.terrain.heightAt(this.rover.pos.x, this.rover.pos.z);
+      const was = this.inPit;
+      this.inPit = dPit < PIT_R * 1.02 && (hRover - this._pitFloorH) < PIT_D * 0.55;
+      if (this.inPit && !was) {
+        this.log('BELOW THE RIM — NO SOLAR, NO SKY', 'warn');
+        this.audio.ui('warn');
+      } else if (!this.inPit && was) {
+        this.log('ABOVE THE RIM — ARRAY IN SUN', 'good');
+      }
+
+      const link = !this.inPit || this.relaysPlaced >= 3;
+      if (link !== this.uplink) {
+        this.uplink = link;
+        this.log(link ? 'UPLINK REACQUIRED' : 'UPLINK LOST — NO LINE OF SIGHT FROM THE FLOOR',
+          link ? 'good' : 'bad');
+        this.audio.radio();
+      }
+
+      if (this.inPit && this.rover.lampPower > 0.15) {
+        const before = this.recordLoss;
+        this.recordLoss = clamp(this.recordLoss + dt * 0.35 * this.rover.lampPower, 0, 100);
+        for (const mark of [10, 35, 70]) {
+          if (before < mark && this.recordLoss >= mark) {
+            this.log(`WORKING FACE SUBLIMING — ${Math.round(this.recordLoss)} % OF THE COLUMN GONE`, 'warn');
+            this.audio.ui('warn');
+          }
+        }
+      }
+    }
+
     /* ---- home services ---- */
     if (this.atHome) {
       if (this.bay.length) {
@@ -644,6 +709,7 @@ export class Game {
       power: this.power, hull: this.hull, met: this.met,
       pos: [this.rover.pos.x, this.rover.pos.z],
       stationVisited: this.stationVisited, coreTaken: this.coreTaken,
+      recordLoss: this.recordLoss,
       odo: this.rover.odo
     };
   }
@@ -657,6 +723,7 @@ export class Game {
     this.relaysPlaced = d.relaysPlaced || 0;
     this.power = d.power ?? 100; this.hull = d.hull ?? 100; this.met = d.met || 0;
     this.stationVisited = !!d.stationVisited; this.coreTaken = !!d.coreTaken;
+    this.recordLoss = d.recordLoss || 0;
     // flags are derived, never stored: the campaign position is the truth and
     // a stored copy is one more thing that can disagree with it
     this.syncFlags();

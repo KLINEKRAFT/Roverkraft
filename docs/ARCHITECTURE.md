@@ -409,3 +409,234 @@ camera or sun state across a panel open, and assume any new panel state inherits
 simulating behind it and the pointer stays locked. `closePanels()` hides pause, codex and
 help — never the card overlay — so Escape stacks the pause panel on top of a still-visible
 card. Check `cardOpen` explicitly rather than inferring it from the state.
+
+---
+
+# Fork additions
+
+Everything above this line is upstream's and still holds. What follows is what
+ROVERKRAFT adds, in the same style and for the same reason: these are the
+invariants that have already been broken at least once.
+
+---
+
+## Frame pacing
+
+Three things now decide how hard the machine is worked, and they interact:
+
+| | |
+|---|---|
+| `settings.fpsCap` | a frame LIMIT, applied in `frame()` by skipping whole rAF callbacks |
+| `engine.paceMode` | `smooth` / `steady` / `fixed` — what the governor is allowed to do |
+| `engine.scaleCap` | the player's ceiling on `renderScale` |
+
+**The limiter skips callbacks; it does not sleep.** A 30 Hz cap on a 60 Hz
+display means drawing every other frame and letting the SoC idle in between,
+which is the entire point — a phone that never gets hot never throttles.
+`last` is deliberately not advanced on a skipped frame, so the delta the
+simulation sees is the real time between the frames it actually drew.
+
+**The governor's thresholds are fractions of `frameBudget`, not constants.**
+They used to be a literal 23 ms and 13.5 ms. With a 30 Hz limiter those had it
+permanently convinced it had headroom, and permanently handing resolution back
+to a device that was about to throttle. `setPacing()` is what keeps
+`frameBudget` in step with the limiter; call one and you have called the other.
+
+**`steady` never climbs, and that is not a limitation.** Under sustained
+thermal throttling a two-way governor pumps: it sheds pixels, the device
+cools, it takes them back, the device heats, repeat. The player never sees a
+stutter — they see the image slowly going soft and then sharp again, and read
+it as the game getting worse. A stable soft image beats a decaying sharp one.
+
+**Menus and panels run at `PANEL_HZ`.** A phone parked on the pause screen
+used to hold the GPU at full tilt for as long as the player was reading.
+
+`Engine.setOverrides()` merges per-field overrides over the tier and re-applies.
+It goes through `setQuality()`, which **rebuilds the composer** — so it is
+followed by `applySettings()`, as every `setQuality()` must be. `applyLevers()`
+in `main.js` is the only correct entry point; call it, not `setOverrides()`.
+
+---
+
+## The soil map
+
+`src/world/soil.js` holds four units and the Bekker-form sinkage function.
+`bakeTerrain()` paints them into a `Uint8Array` at `SOIL_RES` over `SOIL_EXT`
+— one texel per 1.17 m — and `Terrain` uploads that array as `texSoil`.
+
+**It carries no height, so it is outside the physics/pixels contract.** That
+is what makes it cheap: nothing here has to agree with the vertex shader to
+sub-centimetre precision, only to within a cell.
+
+**Nearest on both sides, always.** `soilAt()` and the shader's `uSoil` lookup
+both sample nearest. A filtered soil index is a soil that does not exist —
+halfway between talus and soft fill is not a material, it is an artefact. The
+shader jitters its LOOKUP POSITION by about one texel so unit boundaries are
+ragged rather than a 1.17 m staircase; the wheels read the unjittered grid,
+and the disagreement is bounded by one cell, which is smaller than a wheel.
+
+**`texSoil` is constructed over `this.soil` itself**, unlike `texDent`, which
+is constructed over a stale snapshot and uploaded through scratch blits. So
+`texSoil.needsUpdate = true` is correct here and is what `paveSoil()` does.
+Do not copy the `texDent` pattern onto it, and do not copy this pattern back.
+
+**The order of the bake passes is load-bearing.** Craters splat into `macro`,
+then the collapse splats into `macro`, then the soil base pass reads slope
+from the finished field, then the ejecta pass paints over `MARE` only, then
+the collapse paints its own floor and bench. A young crater's walls stay talus
+because a young crater's walls are talus; the ejecta pass must not overwrite
+them, and it does not because it only claims `MARE`.
+
+**Slope is measured over a 12 m half-baseline, not a texel.** Measured: at
+texel scale the macro field's own crater pitting reads past 16° over 55 % of
+the drivable basin, and at 7 m still 37 %. The surface is saturated with
+metre-scale craters and their walls are not talus, they are texture. What
+decides whether material rests loose is the shape of the hill.
+
+`paveSoil()` exists so the code that owns a location declares what it is
+standing on — `main.js` stamps the sled pad, because `props.js` owns `HOME`
+and terrain.js should not carry a second copy of that coordinate.
+
+---
+
+## Slip-sinkage
+
+Per wheel, `sink = zStatic + slipSink`, where `zStatic` is the Bekker term for
+the unit under that wheel and `slipSink` is what the wheel dug for itself.
+
+**`slipSink` integrates. It is not a multiplier.** A multiplier is
+instantaneous and reversible the moment the number changes; an integral is a
+hole you dug and have to drive out of. It accumulates while the wheel is
+slipping and relaxes at `SLIP_RELAX` when it is not, so easing off is a real
+move and the burial upstream had — with no rescue mechanic — becomes a hazard
+with counterplay.
+
+**The loop is closed and must stay bounded.** Friction falls as the wheel goes
+down, which raises slip, which raises sinkage. `SLIP_SINK_MAX` and `SINK_MAX`
+are what keep that from running away, and `SINK_MAX` is deliberately below
+`DIG_CAP` in `terrain.js`. Traction control breaks the loop before it starts.
+
+**`w.slipLong` used in the dig term is the PREVIOUS substep's.** That is fine
+— the term is a rate over `dt` and one substep of lag at 360 Hz is invisible —
+but do not reorder the substep body assuming otherwise.
+
+The airborne branch relaxes `slipSink` too. A wheel off the ground is not
+excavating, and the hole it left does not stay open while it is up there.
+
+---
+
+## The collapse
+
+`PIT_X`, `PIT_Z`, `PIT_R`, `PIT_D` and `pitH()` live in `terrain.js`;
+`gameplay.js` re-exports the coordinate as `POI.PIT` because the missions ask
+gameplay where things are. One coordinate, one owner.
+
+**`PIT_D` is derived, not chosen.** The floor is in permanent shadow only if
+the far rim subtends more than the maximum solar elevation from it:
+`atan(PIT_D / 2·PIT_R) > max altitude`. At 72.1° north with a 1.54° axial tilt
+that maximum is about 19.4°, so 64 m over a 58 m radius gives 28.9° and a
+floor that is never lit. Shorten the pit and a crescent of the floor lights up
+at high sun, and the place stops being a cold trap. `sunAltitude()` in
+`main.js` is the other half of this pair — upstream ran 17°–31°, which this
+latitude cannot reach, and every shadow-length consequence was being computed
+against a sun that could not be there.
+
+**The pit is splatted into `macro`, not evaluated in `baseHeight()`.**
+`baseHeight` is sampled at 1.875 m and Catmull-Rom upsampled, and a 77° wall
+through that filter rings into a lip at the top and a moat at the bottom. The
+craters learned this first; see the shark-fin note on the rille.
+
+**The bench is a single turn, because it has to be.** The height field is a
+pure function of position, and an angle is not single-valued over more than
+one revolution. The amplitude fades in over the first tenth of the turn, and
+that fade is what makes the seam continuous — at `p = 0` exactly the bench
+contributes nothing, so both sides of the entry ray read the rim.
+
+**The band is a super-Gaussian, not a Gaussian.** A Gaussian has no flat part:
+measured, the bench read as an 18° cross-slope with a dip down its middle and
+the chassis peaked at 40° of tilt driving it. The fourth power gives a flat top
+about twelve metres wide with shoulders that fall away quickly.
+
+Measured on the finished bench: 335 m of path, 8.8° mean grade, entry at
+−8.8 m, floor at −69.4 m. A crude autopilot drives it in about three minutes.
+
+---
+
+## The status tray
+
+`hud.setLayout('phone' | 'wide')` **re-parents** panels between the driving
+HUD and `#trayBody`. Nothing is duplicated and nothing is `display: none`d
+away — a phone player opening the sample bay is not leaving the surface.
+
+**Restore walks the list in REVERSE.** Several of the movable panels are each
+other's `nextSibling`, and forward order throws `NotFoundError` on the first
+pair. The home anchor is recorded in the constructor, before anything moves.
+
+**`--s` is redeclared on `.tray`.** It resolves only inside `.hud`, `#touch`
+and `.tray`; a `calc(N * var(--s))` anywhere else is an invalid value and CSS
+drops the whole declaration. Every instrument moved into the tray is sized in
+`--s`, so the tray has to carry it.
+
+**`hud.refVisible` gates drawing, not just visibility.** Everything behind it
+is a canvas redraw per frame, and drawing a hidden A-scope into a hidden canvas
+is the cheapest thing on the list to stop doing.
+
+**The tray is not a panel.** It takes no `App.state`, does not unlock the
+pointer and does not pause. `closePanels()` does not know about it and must
+not learn.
+
+The grip sits in the strip ABOVE the thumbsticks in portrait and at the top
+edge in landscape. Measured: on a 375 px screen two sticks with their margins
+leave 115 px in the middle, a 104 px grip needs 104 of it, and at the largest
+HUD SIZE the sticks grow and the gap does not.
+
+---
+
+## Missions as data
+
+`lore.js` now holds text **and** what each objective watches for. `gameplay.js`
+holds the machinery and nothing content-shaped.
+
+- `mission.reveals: ['STATION']` → `flags` gains `poi:STATION`; the map and the
+  compass ask `game.revealed('STATION')`.
+- `mission.grants: ['deepString']` → `game.can('deepString')` gates the deep
+  drill.
+- `objective.watch` handles STATES of the world — `far`, `near`, with an
+  optional `within` that is relative to the height at the point of interest
+  rather than an absolute metre count.
+- Events call `complete()` from the code that raises them. A sample stowed is
+  not a state you can test for.
+
+**Do not add a `missionIdx` comparison.** That is exactly what this replaces:
+`< 4`, `=== 4` and `>= 3` were three separate content gates keyed to position
+in the campaign, and inserting a mission in the middle silently pointed the
+deep-drill gate and the station prompt at the wrong one.
+
+**`flags` is derived, never stored.** `syncFlags()` rebuilds it from
+`missionIdx` in `reset()`, `advance()` and `load()`. A stored copy is one more
+thing that can disagree with the campaign position.
+
+**`complete()` and `bump()` are scoped to the active mission.** Unscoped,
+docking with a full bay during mission one set `home1`, and mission two opened
+with one of its two objectives already ticked and no way to un-tick it.
+
+---
+
+## Offline
+
+`sw.js` caches an explicit shell list and serves cache-first for same-origin
+GETs. **There is no crawler.** Adding a source file means adding it to the
+list; the runtime handler will still fetch and cache a missed file, so the cost
+is the first offline load rather than a broken game — but a cold install with
+the tab already offline fails outright.
+
+`caches.match(req, { ignoreSearch: true })` is deliberate: the stylesheet
+carries a `?v=` cache buster, and without it every bump is a cold load of bytes
+that are already there under the old URL.
+
+Registration is deferred to `load`, and falls back to `setTimeout` when the
+page is already complete — `boot()` is async, so `load` has usually fired by
+the time it gets there and a listener alone would never see it.
+
+`VERSION` is the only thing that evicts the old cache. Bump it with any change
+to the shell.

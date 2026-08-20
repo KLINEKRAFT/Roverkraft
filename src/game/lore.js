@@ -211,11 +211,12 @@ export const MISSIONS = [
   },
   {
     id: 'descent', tag: 'MISSION 05', name: 'THE DESCENT',
-    brief: `The pit is ninety metres across and the interior has not been in sunlight since the collapse. Your array will do nothing down there. Your lamps will do everything, including the harm.\n\nDrive in on the talus ramp on the northern lip. Take the deep core off the floor. Then drive back out, because nothing you learn down there matters until it is on the far end of the chain you just built.`,
+    brief: `The collapse is a hundred and sixteen metres across and sixty-four deep, and at this latitude that is deep enough that no part of the floor has been in sunlight since the roof came down. Your array will do nothing down there. Your lamps will do everything, including the harm — every metre of working face you light, you lose.\n\nThere is one way in: the bench the talus cut into the wall, entering from the north lip and spiralling once to the floor. Take the deep core. Then drive back out, because nothing you learn down there matters until it is on the far end of the chain you just built.`,
     grants: ['deepString'],
     objectives: [
-      { id: 'enter', text: 'Descend into the pit', watch: { kind: 'near', poi: 'PIT', m: 40, maxH: -6 },
-        on: { log: ['PIT INTERIOR — NO SOLAR, NO LINE OF SIGHT', 'warn'] } },
+      // `within` is relative to the height AT the point of interest, so this
+      // means "on the floor", not "somewhere near the rim"
+      { id: 'enter', text: 'Reach the pit floor', watch: { kind: 'near', poi: 'PIT', m: 62, within: 24 } },
       { id: 'deep', text: 'Extract the pit floor deep core', hint: '11 m string; you are carrying it now' },
       { id: 'transmit', text: 'Return to the sled and transmit' }
     ]

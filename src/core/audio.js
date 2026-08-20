@@ -397,8 +397,16 @@ export class Audio {
     // rover tops out at 3.6 m/s and would otherwise never sound loaded
     const vmax = st.maxSpeed || 8.4;
     const spd = Math.min(st.speed / (vmax * 0.95), 1);
-    this.gFilt.frequency.setTargetAtTime(180 + spd * 440, t, 0.12);
-    this.gGain.gain.setTargetAtTime((spd * 0.045 + st.slip * 0.085) * moving, t, k);
+    /* The tyre bed is where the soil map becomes audible. `grit` runs 0 for
+       coarse firm ejecta to 1 for fine soft fill; the band moves up and
+       narrows for fine material (a hiss) and sits low and wide for coarse (a
+       rattle), and the fine stuff is quieter, which is why you can drive into
+       a soft patch without noticing until the machine stops going anywhere. */
+    const grit = st.grit === undefined ? 0.5 : st.grit;
+    this.gFilt.frequency.setTargetAtTime(180 + spd * 440 + grit * 620, t, 0.12);
+    this.gFilt.Q.setTargetAtTime(0.42 + grit * 1.5, t, 0.2);
+    this.gHi.gain.setTargetAtTime(-12 + (1 - grit) * 9, t, 0.2);
+    this.gGain.gain.setTargetAtTime((spd * 0.045 + st.slip * 0.085) * (1.12 - grit * 0.3) * moving, t, k);
 
     // scatter individual grains on top of the bed
     if (moving && (spd > 0.06 || st.slip > 0.08)) {

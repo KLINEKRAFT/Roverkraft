@@ -13,6 +13,7 @@ import { bakeTerrain, Terrain, PLAYABLE_R } from './world/terrain.js';
 import { Sky } from './world/sky.js';
 import { Props, HOME } from './world/props.js';
 import { Dust } from './world/dust.js';
+import { SOIL, MARE } from './world/soil.js';
 import { makeEarthTextures, makeMoonAlbedo } from './world/textures.js';
 import { Rover, DRIVE, EARTH_RTT } from './game/rover.js';
 import { CameraRig, CAM } from './game/camera.js';
@@ -168,6 +169,10 @@ async function boot() {
   const sky = new Sky(engine.renderer, engine.scene, tex, engine.quality);
   const props = new Props(engine.scene, terrain, engine.quality);
   props.buildHome();
+  /* The pad is levelled by Props; it must also not be somewhere you sink.
+     Stamped from here rather than inside the bake so HOME stays the one
+     coordinate — terrain.js does not get a second copy of it. */
+  terrain.paveSoil(HOME.x, HOME.z, 30, MARE);
   props.buildStation(STATION.x, STATION.z);
   // survey pylons the previous crew left behind
   [[-60, 180], [-150, 40], [60, -140], [190, 60], [-250, -110]].forEach((p, i) =>
@@ -201,6 +206,8 @@ async function boot() {
   buildSettingsUI();
   buildHelpUI();
   wireUI();
+  wireInstall();
+  registerServiceWorker();
 
   /* The HUD moves instruments between the driving layout and the tray, so it
      has to know when the breakpoint crosses. Matching the stylesheet's query
@@ -836,10 +843,13 @@ function stepWorld(dt, raw, input) {
       }
       w.lastGround.set(gx, w.worldPos.y, gz);
     }
-    // Wheelspin excavates. Keep the throttle down in soft ground and you will
-    // dig a hole and drop into it, exactly as you would on the real thing.
+    /* Wheelspin excavates, and now at a rate the GROUND sets. The hole the
+       shader draws and the sinkage the wheel model carries are driven by the
+       same two numbers — this wheel's slip and this unit's `dig` — so what you
+       see under the tyre is what the physics thinks is there. */
+    const dig = (SOIL[w.soil] || SOIL[MARE]).dig;
     if (w.slipLong > 0.22 && Math.abs(rover.speed) < 2.4) {
-      terrain.rut(gx, gz, 0.27, 0.06, (w.slipLong - 0.18) * dt * 0.42);
+      terrain.rut(gx, gz, 0.27, 0.06, (w.slipLong - 0.18) * dt * 0.42 * dig);
     }
     /* Rooster tails. The grousers fling regolith whether or not the wheel is
        slipping, and at 1/6 g it arcs for twenty metres before it lands — the
@@ -904,7 +914,11 @@ function stepWorld(dt, raw, input) {
     wheelSpin: spinMax, motorLoad: rover.motorLoad, speed,
     slip: clamp(slipSum / 6, 0, 1), rough: clamp(roughSum / 6, 0, 1),
     drilling: game.drill.active, contacts, alarm: game.dangerTone,
-    maxSpeed: DRIVE.maxSpeed, spinRef: rover.spinRef
+    maxSpeed: DRIVE.maxSpeed, spinRef: rover.spinRef,
+    // "you can feel the difference between two parts of the basin with your
+    // eyes shut" is the acceptance test for the soil map, and the tyre bed is
+    // where that lands: coarse ejecta rattles, soft fill hisses.
+    grit: (SOIL[rover.soilUnit] || SOIL[MARE]).grit
   });
   audio.musicTick(App.elapsed, game.dangerTone);
 
@@ -922,11 +936,18 @@ function stepWorld(dt, raw, input) {
   if (!App._saveT || App.elapsed - App._saveT > 20) { App._saveT = App.elapsed; Save.write(game.save()); }
 }
 
-/** At 73° N the sun never gets high and never sets — it circles the horizon,
-    bobbing between about 17° and 31°. Long shadows all day, sweeping like a
-    sundial, and a rim wall that keeps its own floor in the dark for hours. */
+/** At 72.1° N the sun never gets high and never sets — it circles the horizon,
+    bobbing between about 12° and 19°. Long shadows all day, sweeping like a
+    sundial, and a rim wall that keeps its own floor in the dark for hours.
+
+    Upstream ran 17°–31°, which is not reachable at this latitude: the Moon's
+    axial tilt is 1.54°, so the maximum solar elevation at 72.1° N is about
+    19.4° and the geometry that follows from it — shadow lengths, how deep a
+    hole has to be before its floor never sees the sun — was all being
+    computed against a sun that could not be there. The collapse's depth is
+    derived from this number; see PIT_D in terrain.js. */
 function sunAltitude(az) {
-  return 0.42 + Math.sin(az * 0.5 - 0.4) * 0.12;      // 17° … 31°
+  return 0.272 + Math.sin(az * 0.5 - 0.4) * 0.055;    // 12.4° … 18.7°
 }
 
 function syncSun() {
@@ -940,6 +961,61 @@ function syncSun() {
 }
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+
+/* ============================================================
+   INSTALL — the PWA half of shipping
+   ------------------------------------------------------------
+   Registered after load, not during it: a service worker install competes
+   with the terrain bake for the same main thread, and the bake is what the
+   player is watching. Deliberately no update PROMPT either — the game holds
+   no server state and a save survives a reload, so a new build takes effect
+   the next time the tab is opened and nobody is interrupted mid-drive.
+   ============================================================ */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // file:// has no service worker scope, and the game will not run there
+  // anyway because it uses ES modules.
+  if (location.protocol !== 'https:' && location.hostname !== 'localhost') return;
+  // boot() is async, so `load` has usually already fired by the time this
+  // runs — a listener alone would never see it and the game would never
+  // install. Defer to the next macrotask instead if the page is done.
+  const go = () => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      App.sw = reg;
+      reg.addEventListener('updatefound', () => {
+        const w = reg.installing;
+        if (!w) return;
+        w.addEventListener('statechange', () => {
+          if (w.state === 'installed' && navigator.serviceWorker.controller) {
+            App.updateReady = true;
+            App.hud?.log('NEW BUILD CACHED — TAKES EFFECT ON NEXT LAUNCH');
+          }
+        });
+      });
+    }).catch((e) => console.warn('[roverkraft] service worker:', e.message));
+  };
+  if (document.readyState === 'complete') setTimeout(go, 0);
+  else addEventListener('load', go);
+}
+
+function wireInstall() {
+  const btn = $('btnInstall');
+  addEventListener('beforeinstallprompt', (e) => {
+    // Chrome will show its own mini-infobar unless this is prevented, and the
+    // menu already has a place for this that does not cover the game.
+    e.preventDefault();
+    App.installPrompt = e;
+    btn.hidden = false;
+  });
+  addEventListener('appinstalled', () => { btn.hidden = true; App.installPrompt = null; });
+  btn.onclick = async () => {
+    if (!App.installPrompt) return;
+    btn.hidden = true;
+    App.installPrompt.prompt();
+    await App.installPrompt.userChoice;
+    App.installPrompt = null;
+  };
+}
 
 /* ============================================================ */
 addEventListener('error', (e) => {

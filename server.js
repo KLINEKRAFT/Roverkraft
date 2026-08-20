@@ -1,4 +1,4 @@
-/* Zero-dependency static server for REGOLITH.
+/* Zero-dependency static server for ROVERKRAFT.
    node server.js [port]                                     */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -14,6 +14,7 @@ const MIME = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
   '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
   '.hdr': 'image/vnd.radiance', '.bin': 'application/octet-stream',
@@ -63,6 +64,6 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`\n  REGOLITH — The Silence at Anaxagoras`);
+  console.log(`\n  ROVERKRAFT — The Philolaus Descent`);
   console.log(`  running at  http://localhost:${PORT}\n`);
 });
