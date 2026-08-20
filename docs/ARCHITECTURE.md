@@ -640,3 +640,23 @@ the time it gets there and a listener alone would never see it.
 
 `VERSION` is the only thing that evicts the old cache. Bump it with any change
 to the shell.
+
+### The CDN must not fight the worker
+
+`vercel.json` exists for one reason: **`sw.js` and `index.html` are served
+`max-age=0, must-revalidate`.** The worker is the only route an installed
+player has to a new build — if the CDN holds `sw.js`, the phone on the home
+screen keeps running the shell it already cached and a deploy reaches nobody
+until the browser's own ~24-hour service-worker check fires. `index.html` is
+the same problem one level up: it is what the worker serves as the offline
+fallback.
+
+Everything else gets an hour (a day for icons) rather than a year, because
+none of these filenames carry a content hash. The service worker is the real
+cache; the CDN only has to not get in its way.
+
+`outputDirectory` is pinned to `.` so a framework detector cannot decide
+otherwise on some future deploy. There is no build step and `package.json`
+has no `build` script, so nothing runs — the repo root IS the site. Any other
+static host works the same way; the file is Vercel-shaped because that is
+where it is deployed, not because anything depends on Vercel.
