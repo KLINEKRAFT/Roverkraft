@@ -88,10 +88,15 @@ load, so once the source is cached there is nothing left to fetch.
 |---|---|
 | **Drive** | left stick, or `W` `A` `S` `D`; `SPACE` brakes |
 | **Look** | right stick, or the mouse |
+| **Zoom** | wheel, or `−` and `+` — 2.6 m to 120 m, far enough to read the basin you are standing in |
 | **Science** | `SCAN` radar · `ARM` deploy · `DRILL` — `G`, `R`, left mouse |
 | **Systems** | `LAMP` · `RELAY` — `F`, `B` |
 | **Contextual** | `RIGHT` to recover a rollover, `HOLD` to interact. Both appear only when they can do something |
 | **STATUS** | the tray at the bottom edge: sample bay, thermal, wheel loads, radar scope, compass, clock, camera, codex |
+
+`SYSTEMS` → **AWAY MESSAGE** stands the survey down behind your own text with the
+basin still on view: the clock stops, nothing drains, and the camera keeps a slow
+orbit around the parked rover. Any key resumes.
 
 `SYSTEMS` → **ONE-HANDED** drops to a single stick for steer and throttle and
 centres the camera for you. `SYSTEMS` → **FRAME LIMIT** is the setting that

@@ -8,6 +8,22 @@ import { DRIVE } from './rover.js';
 export const CAM = { CHASE: 0, ORBIT: 1, MAST: 2, PHOTO: 3 };
 const NAMES = ['CHASE', 'ORBIT', 'MAST CAM', 'PHOTO'];
 
+/* ---- how far the rig can stand off ----
+   The old ceiling was 26 m, which is a chase distance rather than a view: the
+   rover is 2.5 m long, so 26 m frames the machine and about one crater's worth
+   of ground around it. 120 m is far enough to read the shape of the basin the
+   rover is standing in — a rim, a ridge line, the pit — which is the thing
+   worth looking at on a screen big enough to show it.
+
+   The step is MULTIPLICATIVE. A fixed 0.9 m per notch is a huge move at 3 m
+   and an imperceptible one at 100 m; a constant ratio is the same apparent
+   change everywhere, which is what a zoom control is supposed to feel like.
+   1.16 per notch puts the whole 2.6-to-120 range within about 26 notches. */
+export const ZOOM_MIN = 2.6, ZOOM_MAX = 120;
+const ZOOM_STEP = 1.16;
+/* Held-key zoom, in notches per second. Traverses the full range in ~2.9 s. */
+const ZOOM_KEY_RATE = 9;
+
 export class CameraRig {
   constructor(camera, terrain) {
     this.cam = camera;
@@ -50,7 +66,11 @@ export class CameraRig {
     const s = 0.0022 * this.sens;
     this.yaw -= input.lookX * s;
     this.pitch = clamp(this.pitch + input.lookY * s * inv, -1.15, 1.25);
-    if (input.zoom) this.dist = clamp(this.dist + input.zoom * 0.9, 2.6, 26);
+    /* Wheel notches are consumed whole; the keys are a rate, so they need dt.
+       Both land in the same exponent, so a key and a wheel move the view by
+       the same amount per notch. */
+    const zn = (input.zoom || 0) + (input.zoomRate || 0) * ZOOM_KEY_RATE * dt;
+    if (zn) this.dist = clamp(this.dist * Math.pow(ZOOM_STEP, zn), ZOOM_MIN, ZOOM_MAX);
     // Any real look input resets the idle clock that gates auto-centring.
     // Driven by an explicit flag from the input layer rather than a magnitude
     // threshold: lookX/lookY are in mouse pixels, and a thumbstick at a third

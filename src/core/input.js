@@ -204,6 +204,11 @@ export class Input {
     const out = {
       throttle: 0, steer: 0, brake: 0,
       lookX: 0, lookY: 0, zoom: 0,
+      /* Wheel notches arrive as a count to be consumed once; the keys are a
+         held rate the camera scales by dt. Kept as separate fields because
+         mixing a per-frame count with a per-second rate in one number is only
+         correct at one frame rate. */
+      zoomRate: 0,
       // Whether the operator is actively aiming the view. The camera used to
       // infer this from the magnitude of lookX/lookY, but that number is in
       // mouse pixels — a thumbstick pushed a third of the way produces a
@@ -221,6 +226,11 @@ export class Input {
     // mouse look
     out.lookX = this.mouse.dx; out.lookY = this.mouse.dy;
     out.zoom = this.mouse.wheel;
+    /* Trackpads and the mice that ship with most desktops have no detented
+       wheel worth aiming with, and a laptop two-finger scroll arrives as a
+       flood of tiny deltas. Keys are the reliable way to pull the view back. */
+    if (this.down('Minus', 'NumpadSubtract')) out.zoomRate += 1;
+    if (this.down('Equal', 'NumpadAdd')) out.zoomRate -= 1;
     if (this.mouse.dx || this.mouse.dy) out.looking = true;
     this.mouse.dx = 0; this.mouse.dy = 0; this.mouse.wheel = 0;
 
