@@ -268,7 +268,7 @@ function startGame(freeRoam, loadSaved) {
   App.audio.setMusic(App.settings.music);
 
   $('menu').classList.add('hidden');
-  App.hud.show();
+  App.hud.showHUD();
   App.game.reset(freeRoam);
   App.terrain.clearDent();
   App.terrain.clearTrails();
@@ -375,12 +375,19 @@ function exitAway() {
      next tick instead, where the ordering is no longer in question.
      Without it, dismissing the away screen with a click fires the drill. */
   App.swallowClick = true;
-  App.hud.showHUD();
+  /* State and rig first, DOM and devices after. This function shipped once
+     calling a method that did not exist (`showHUD` where the HUD class had
+     `show`), and because the throw landed BEFORE the assignment below, the
+     away overlay hid, the HUD never came back, and the state stayed AWAY —
+     every subsequent keypress threw again and the game was stuck. Restoring
+     the state machine before anything that can throw means the worst case is
+     a cosmetic failure rather than an unrecoverable one. */
   App.state = ST.PLAY;
   /* The rig's smoothing history still points at the orbit it was just flying,
      up to 60 m off the rover. Without this the return is a one-second swoop
      from out there back into the chase seat. */
   App.rig.first = true;
+  App.hud.showHUD();
   App.input.lock();
   App.input.showTouch(true);
   App.audio.ui('ok');

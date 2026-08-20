@@ -19,7 +19,7 @@
    cache is deleted on the next activation.
    ============================================================ */
 
-const VERSION = 'roverkraft-v2';
+const VERSION = 'roverkraft-v3';
 
 const SHELL = [
   './',

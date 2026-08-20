@@ -668,7 +668,7 @@ export class HUD {
 
   /* The tray is part of the HUD, so it comes and goes with it — a status
      tray over the main menu would be a panel with nothing to report. */
-  show() {
+  showHUD() {
     this.el.hud.classList.remove('hidden');
     this.el.tray.classList.remove('hidden');
   }
