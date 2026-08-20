@@ -640,3 +640,33 @@ the time it gets there and a listener alone would never see it.
 
 `VERSION` is the only thing that evicts the old cache. Bump it with any change
 to the shell.
+
+### The CDN must not fight the worker
+
+`vercel.json` exists for one reason: **`sw.js` and `index.html` are served
+`max-age=0, must-revalidate`.** The worker is the only route an installed
+player has to a new build — if the CDN holds `sw.js`, the phone on the home
+screen keeps running the shell it already cached and a deploy reaches nobody
+until the browser's own ~24-hour service-worker check fires. `index.html` is
+the same problem one level up: it is what the worker serves as the offline
+fallback.
+
+Everything else gets an hour (a day for icons) rather than a year, because
+none of these filenames carry a content hash. The service worker is the real
+cache; the CDN only has to not get in its way.
+
+`framework` is pinned to `null` — the "Other" preset — and this is the part
+that actually matters. `outputDirectory: "."` alone was not enough: the first
+deploy read `package.json`'s `start` script, detected the Node preset, and
+logged *"Using server.js as the root entrypoint"*, which put `server.js` —
+the local dev server — behind every request. It answered `/` with its own
+`404 — not found` because on the build host the files it serves are not
+where it looks for them. `server.js` exists for `npm start` and nothing else;
+a host that runs it is a host that has misread the project.
+
+So the three build fields are all refusals rather than instructions:
+`framework: null` (do not detect one), `buildCommand: ""` and
+`installCommand: ""` (run nothing — there is no `build` script and no
+dependency to install), `outputDirectory: "."` (the repo root IS the site).
+Any other static host works the same way; the file is Vercel-shaped because
+that is where it is deployed, not because anything depends on Vercel.
