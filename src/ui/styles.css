@@ -590,3 +590,34 @@ kbd{display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border
   .panel-foot{padding:10px 14px;gap:6px;flex-wrap:wrap}
   .panel-foot .btn{padding:9px 12px;font-size:10px}
 }
+
+/* ============================================================
+   DIAGNOSTICS — frame trace overlay
+
+   Sized in px, not in --s: `--s` resolves only inside the .hud and #touch
+   subtrees, and a calc() over an undefined variable makes CSS drop the whole
+   declaration. This panel lives on <body>.
+   ============================================================ */
+.seg-act{
+  border:1px solid var(--hair2);padding:7px 13px;font-size:9.5px;letter-spacing:.14em;
+  color:var(--bone-dim);flex:0 0 auto;min-width:76px;text-align:center;
+}
+.seg-act:hover{color:var(--bone);border-color:var(--cyan-dim)}
+
+#perf{
+  position:fixed;z-index:38;pointer-events:none;
+  top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));
+  padding:8px 10px;border:1px solid var(--hair2);background:rgba(4,5,10,.80);
+  font-variant-numeric:tabular-nums;letter-spacing:.04em;color:var(--bone);
+  min-width:186px;
+}
+.perf-now{font-size:15px;display:flex;justify-content:space-between;gap:10px}
+.perf-now b{font-weight:400;color:var(--cyan)}
+.perf-sub{font-size:8.5px;letter-spacing:.16em;color:rgba(216,210,198,.42);margin-top:4px}
+.perf-rows{margin-top:7px;border-top:1px solid var(--hair);padding-top:6px;font-size:9.5px}
+.perf-rows > div{display:flex;justify-content:space-between;gap:6px;padding:1px 0}
+.perf-rows .perf-hd{color:rgba(216,210,198,.38);letter-spacing:.14em}
+.perf-rows i,.perf-rows b,.perf-rows u{font-style:normal;font-weight:400;text-decoration:none;
+  flex:1 1 0;text-align:right}
+.perf-rows i{text-align:left;color:rgba(216,210,198,.42)}
+.perf-rows b{color:var(--cyan)}

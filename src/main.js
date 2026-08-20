@@ -7,6 +7,7 @@ import { Engine, QUALITY } from './core/engine.js';
 import { Input } from './core/input.js';
 import { Audio } from './core/audio.js';
 import { Save } from './core/save.js';
+import { Perf } from './core/perf.js';
 import { clamp, sstep, lerp } from './core/rng.js';
 import { bakeTerrain, Terrain, PLAYABLE_R } from './world/terrain.js';
 import { Sky } from './world/sky.js';
@@ -162,13 +163,16 @@ async function boot() {
   const hud = new HUD(audio);
   hud.bakeMap(terrain);
 
+  const perf = new Perf();
+  perf.mount();
+
   const input = new Input($('stage'));
   const game = new Game({
     terrain, rover, props, dust, sky, audio, hud, engine, rig, scene: engine.scene, input
   });
   game.tc = App.settings.tc;
 
-  Object.assign(App, { terrain, sky, props, dust, rover, rig, audio, hud, input, game, tex });
+  Object.assign(App, { terrain, sky, props, dust, rover, rig, audio, hud, input, game, tex, perf });
 
   applySettings();
   buildSettingsUI();
@@ -292,6 +296,7 @@ function buildSettingsUI() {
     { type: 'seg', label, note, opts, get, set });
   const rng = (label, note, min, max, step, get, set) => rows.push(
     { type: 'rng', label, note, min, max, step, get, set });
+  const act = (label, note, cta, run) => rows.push({ type: 'btn', label, note, cta, run });
 
   seg('RENDER QUALITY', 'clipmap, shadows, excavation grid, boulders, particles',
     ['LOW', 'MEDIUM', 'HIGH', 'ULTRA'],
@@ -340,13 +345,38 @@ function buildSettingsUI() {
   rng('EFFECTS VOLUME', '', 0, 1, 0.05, () => S.volSfx, (v) => { S.volSfx = v; App.audio.setVolumes(v, S.volMusic); persist(); });
   rng('MUSIC VOLUME', '', 0, 1, 0.05, () => S.volMusic, (v) => { S.volMusic = v; App.audio.setVolumes(S.volSfx, v); persist(); });
 
+  /* ---- diagnostics ----
+     Deliberately in the shipped build and not behind a debug flag. The number
+     that matters on a phone is the one at minute ten, on the player's own
+     device, in the player's own pocket — not one measured here. */
+  act('FRAME TRACE', 'records mean / p50 / p95 frame time in 10 s rows',
+    () => App.perf.recording ? 'STOP' : 'START',
+    () => {
+      if (App.perf.recording) { App.perf.stop(); App.hud.log('TRACE STOPPED — ' + App.perf.buckets.length + ' ROWS'); }
+      else {
+        App.perf.start(`quality=${S.quality} hud=${S.hudScale} profile=${S.realistic ? 'LRV' : 'ARCADE'}`);
+        App.perf.toggle(true);
+        App.hud.log('TRACE RECORDING — DRIVE FOR TEN MINUTES', 'good');
+      }
+    });
+  act('TRACE OVERLAY', 'live frame time, top left', () => App.perf.on ? 'HIDE' : 'SHOW',
+    () => App.perf.toggle());
+  act('SAVE TRACE', 'downloads a CSV you can put next to a second run', () => 'CSV',
+    () => { if (!App.perf.buckets.length) App.hud.log('NO TRACE TO SAVE', 'warn'); else App.perf.download(); });
+
   body.innerHTML = '';
   for (const r of rows) {
     const d = document.createElement('div'); d.className = 'set-row';
     const l = document.createElement('label');
     l.innerHTML = `${r.label}${r.note ? `<small>${r.note}</small>` : ''}`;
     d.appendChild(l);
-    if (r.type === 'seg') {
+    if (r.type === 'btn') {
+      const b = document.createElement('button');
+      b.className = 'seg-act';
+      b.textContent = r.cta();
+      b.onclick = () => { r.run(); b.textContent = r.cta(); App.audio.ui('tick'); };
+      d.appendChild(b);
+    } else if (r.type === 'seg') {
       const s = document.createElement('div'); s.className = 'seg';
       r.opts.forEach((o, i) => {
         const b = document.createElement('button'); b.textContent = o;
@@ -492,6 +522,7 @@ function tick(dt) {
     if (App.state === ST.PLAY) { App.hud.refreshCodex(App.game); openPanel('codex', ST.CODEX); }
     else if (App.state === ST.CODEX) closePanels();
   }
+  if (input.hit('Backquote')) App.perf.toggle();
   if (input.hit('KeyH') && App.state >= ST.PLAY) {
     App.settings.hudOn = !App.settings.hudOn;
     App.hud.el.hud.style.opacity = App.settings.hudOn ? '' : '0';
@@ -518,6 +549,10 @@ function tick(dt) {
 
   fpsT += dt; fpsN++;
   if (fpsT > 1) { App.fps = fpsN / fpsT; fpsT = 0; fpsN = 0; }
+  /* The trace records real frame deltas, including the ones spent in menus.
+     A session is what the device actually did, not the part of it we like. */
+  App.perf.sample(dt, App.engine);
+  App.perf.update(dt, App.engine);
   void acc;
 }
 
