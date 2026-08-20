@@ -1,5 +1,5 @@
 /* ============================================================
-   THE SKY OVER ANAXAGORAS  (73.4°N, 10.1°W — near the north limb)
+   THE SKY OVER PHILOLAUS  (72.1°N, 32.4°W — near the north limb)
    ------------------------------------------------------------
    No atmosphere means: black sky at noon, stars that do not twinkle,
    a sun that never softens, and a terminator you can stand on.

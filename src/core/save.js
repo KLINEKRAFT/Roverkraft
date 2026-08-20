@@ -1,4 +1,13 @@
-const KEY = 'regolith.anaxagoras.v1';
+/* Bump this whenever anomaly generation, the terrain the filters read, or the
+   mission list changes. save() writes anomaly state as a bare positional array
+   with no id and no coordinates, so a one-slot shift silently marks the wrong
+   object as taken — and there is no version field inside the blob to catch it.
+   The key IS the version.
+
+   v1  upstream REGOLITH / Anaxagoras
+   v2  Philolaus: vein/horizon/deep taxonomy, veins centred on the pit,
+       five missions reordered, flags derived from mission position */
+const KEY = 'roverkraft.philolaus.v2';
 
 export const Save = {
   read() {

@@ -1,11 +1,12 @@
 /* ============================================================
-   THINGS ON THE FLOOR OF ANAXAGORAS
+   THINGS ON THE FLOOR OF PHILOLAUS
    ------------------------------------------------------------
    Boulder fields (instanced), the descent sled you arrived on,
-   what is left of Beacon-9, survey pylons, deployable relays,
-   and the lattice itself.
+   what is left of KEEL-4, survey pylons, deployable relays,
+   and the veins where they break surface.
    ============================================================ */
 import * as THREE from 'three';
+import { UI } from '../ui/theme.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeRNG, vnoise, fbm, clamp, sstep } from '../core/rng.js';
 import { PLAYABLE_R } from './terrain.js';
@@ -313,7 +314,7 @@ export class Props {
   }
 
   /* ============================================================
-     BEACON-9 — what the night left behind
+     KEEL-4 — what the night left behind
      ============================================================ */
   buildStation(x, z) {
     const g = new THREE.Group();
@@ -568,17 +569,16 @@ export const HOME = { x: 96, z: 214 };
 function makeFlagMaterial() {
   const c = document.createElement('canvas'); c.width = 256; c.height = 156;
   const g = c.getContext('2d');
-  g.fillStyle = '#0d1220'; g.fillRect(0, 0, 256, 156);
-  g.strokeStyle = '#6fe3f5'; g.lineWidth = 3; g.strokeRect(8, 8, 240, 140);
-  g.fillStyle = '#d8d2c6';
-  g.font = '600 26px ui-monospace, monospace';
-  g.fillText('SELENE', 26, 62);
-  g.font = '500 14px ui-monospace, monospace';
-  g.fillStyle = '#6fe3f5';
-  g.fillText('DIRECTORATE', 26, 86);
-  g.fillStyle = '#8b8578';
-  g.font = '500 11px ui-monospace, monospace';
-  g.fillText('AD LUNAM · PER NOCTEM', 26, 116);
+  g.fillStyle = '#111111'; g.fillRect(0, 0, 256, 156);
+  g.strokeStyle = '#F0EDE5'; g.lineWidth = 3; g.strokeRect(8, 8, 240, 140);
+  g.fillStyle = '#F0EDE5';
+  g.font = `600 26px ${UI.font}`;
+  g.fillText('NORTHFIELD', 26, 62);
+  g.font = `500 14px ${UI.font}`;
+  g.fillStyle = '#8A8A87';
+  g.fillText('COMMISSION', 26, 86);
+  g.font = `500 11px ${UI.font}`;
+  g.fillText('WHAT THE COLD KEEPS', 26, 116);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return new THREE.MeshStandardMaterial({ map: t, side: THREE.DoubleSide, roughness: 0.85, metalness: 0.0 });

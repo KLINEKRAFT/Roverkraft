@@ -1,5 +1,5 @@
 /* ============================================================
-   MU-7 "CASSIOPEIA" — survey rover
+   K6 "MERIDIAN" — survey rover, by KLINEKRAFT
    ------------------------------------------------------------
    900 kg, six-wheel drive, rocker-bogie suspension, 1.62 m/s².
    Physics: a proper rigid body (quaternion + inertia tensor) with a
@@ -8,6 +8,7 @@
    regolith is not asphalt — it is 40 % void, and it eats momentum.
    ============================================================ */
 import * as THREE from 'three';
+import { UI } from '../ui/theme.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { clamp, sstep, lerp, makeRNG } from '../core/rng.js';
 import { MOON_G } from '../world/terrain.js';
@@ -150,16 +151,16 @@ function panelTexture(size = 512) {
   }
   // markings
   g.fillStyle = '#2a2824';
-  g.font = `600 ${Math.round(size * 0.052)}px ui-monospace, monospace`;
-  g.fillText('MU-7 · CASSIOPEIA', size * 0.06, size * 0.16);
-  g.font = `500 ${Math.round(size * 0.034)}px ui-monospace, monospace`;
+  g.font = `600 ${Math.round(size * 0.052)}px ${UI.font}`;
+  g.fillText('K6 · MERIDIAN', size * 0.06, size * 0.16);
+  g.font = `500 ${Math.round(size * 0.034)}px ${UI.font}`;
   g.fillStyle = '#5a564e';
-  g.fillText('SELENE DIRECTORATE', size * 0.06, size * 0.235);
-  g.fillText('FAR-SIDE SURVEY DIV.', size * 0.06, size * 0.29);
+  g.fillText('KLINEKRAFT', size * 0.06, size * 0.235);
+  g.fillText('NORTHFIELD COMMISSION', size * 0.06, size * 0.29);
   g.strokeStyle = '#b4472a'; g.lineWidth = 4;
   g.strokeRect(size * 0.06, size * 0.66, size * 0.30, size * 0.16);
   g.fillStyle = '#b4472a';
-  g.font = `700 ${Math.round(size * 0.045)}px ui-monospace, monospace`;
+  g.font = `700 ${Math.round(size * 0.045)}px ${UI.font}`;
   g.fillText('NO STEP', size * 0.085, size * 0.765);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;

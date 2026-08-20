@@ -1,5 +1,5 @@
 /* ============================================================
-   REGOLITH — The Silence at Anaxagoras
+   ROVERKRAFT — The Philolaus Descent
    Bootstrap, loading, menus, and the frame loop.
    ============================================================ */
 import * as THREE from 'three';
@@ -16,12 +16,18 @@ import { Dust } from './world/dust.js';
 import { makeEarthTextures, makeMoonAlbedo } from './world/textures.js';
 import { Rover, DRIVE, EARTH_RTT } from './game/rover.js';
 import { CameraRig, CAM } from './game/camera.js';
-import { Game, STATION, MASSIF, OPS } from './game/gameplay.js';
+import { Game, STATION, PIT, OPS } from './game/gameplay.js';
 import { HUD } from './ui/hud.js';
 import { MISSIONS } from './game/lore.js';
+import { UI } from './ui/theme.js';
 
 const $ = (id) => document.getElementById(id);
 const ST = { BOOT: 0, MENU: 1, PLAY: 2, PAUSE: 3, CODEX: 4, HELP: 5, CARD: 6 };
+
+/* A coarse pointer means a touch screen. It is not a proxy for a slow chip —
+   an iPad Pro reports it — but it IS a proxy for a thermally limited enclosure
+   with no fan, which is what the pacing defaults care about. */
+const TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 
 const App = {
   state: ST.BOOT,
@@ -29,7 +35,23 @@ const App = {
     quality: guessQuality(), fov: 58, sens: 1.0, invertY: false,
     bloom: true, grain: 1.0, aberr: 1.0, stars: 1.0,
     volSfx: 0.8, volMusic: 0.5, music: true, tc: true, hudOn: true, autoCentre: 1,
-    hudScale: 1, realistic: false, comms: false
+    hudScale: 1, realistic: false, comms: false,
+    /* ---- pacing, phone-first defaults ----
+       A fanless device holds 60 fps for ninety seconds and then falls off a
+       cliff. Capping the frame rate is the only lever that reduces the heat
+       rather than reacting to it, so touch devices start capped and steady;
+       a desktop starts uncapped and chases the budget both ways. */
+    fpsCap: TOUCH ? 60 : 0,
+    pace: TOUCH ? 'steady' : 'smooth',
+    resScale: 1,
+    /* Twin thumbsticks presume two hands. A meaningful share of phone
+       sessions are not — on a train, holding something else — and a single
+       stick with the camera auto-centred is a real way to play, not a
+       concession. */
+    oneHand: false,
+    detail: 2,            // 0 = two rings off the tier, 1 = one, 2 = tier
+    clutter: 2,           // 0 = sparse, 1 = half, 2 = tier
+    shadows: 1            // 0 = off, 1 = tier
   }, Save.settings()),
   elapsed: 0, sunAz: 4.35, paused: false
 };
@@ -138,7 +160,7 @@ async function boot() {
   if (!tex.moonAlbedo) tex.moonAlbedo = makeMoonAlbedo();
   progress(0.90, 'downlinking imagery');
 
-  progress(0.94, 'assembling MU-7');
+  progress(0.94, 'assembling K6');
   const terrain = new Terrain(engine.renderer, baked, engine.quality, engine.caps);
   terrain.uniforms.uAlbedoTex.value = tex.moonAlbedo;
   engine.scene.add(terrain.group);
@@ -153,7 +175,7 @@ async function boot() {
   // the lattice breaking surface in a few places
   [[-118, -64, 1.3], [86, -152, 1.0], [-206, 96, 1.15], [24, 118, 0.9], [-40, -218, 1.25]]
     .forEach(([x, z, s]) => props.buildLatticeNode(x, z, s));
-  props.buildLatticeNode(MASSIF.x + 6, MASSIF.z - 4, 2.1, true);
+  props.buildLatticeNode(PIT.x + 6, PIT.z - 4, 2.1, true);
 
   const dust = new Dust(engine.scene, terrain, terrain.uniforms.uSunDir, engine.quality.dust);
   const rover = new Rover(terrain, engine.scene);
@@ -175,13 +197,30 @@ async function boot() {
   Object.assign(App, { terrain, sky, props, dust, rover, rig, audio, hud, input, game, tex, perf });
 
   applySettings();
+  applyLevers();
   buildSettingsUI();
   buildHelpUI();
   wireUI();
 
+  /* The HUD moves instruments between the driving layout and the tray, so it
+     has to know when the breakpoint crosses. Matching the stylesheet's query
+     exactly is the point — two sources of truth here would put a panel in
+     neither place. */
+  const phoneQ = matchMedia('(max-width:700px), (max-height:520px)');
+  const syncLayout = () => App.hud.setLayout(phoneQ.matches ? 'phone' : 'wide');
+  phoneQ.addEventListener('change', syncLayout);
+  syncLayout();
+
   App.tick = tick;
   App.startGame = startGame;
-  window.REGOLITH = App;                 // debug handle: inspect or drive from the console
+  // settings mutators, so a console session or a headless driver can move a
+  // lever the way the panel does instead of poking the engine directly
+  App.applySettings = applySettings;
+  App.applyLevers = applyLevers;
+  /* Debug handle. Kept as REGOLITH as well as ROVERKRAFT: every note in
+     docs/ARCHITECTURE.md and every habit built on the upstream project reaches
+     for the old name, and an alias costs one line. */
+  window.ROVERKRAFT = window.REGOLITH = App;
   progress(1, 'link established');
   await new Promise(r => setTimeout(r, 260));
   $('boot').classList.add('hidden');
@@ -201,11 +240,11 @@ function showMenu() {
   const saved = Save.read();
   $('btnContinue').hidden = !saved;
   $('menuBrief').innerHTML =
-    `Two hundred and fourteen days ago the far-side outpost <b>BEACON-9</b> sent four seconds of
-     empty carrier and stopped. You are the operator of <b>MU-7 CASSIOPEIA</b>, put down by descent
-     sled on the floor of <b>Anaxagoras</b> at seventy-three degrees north.<br><br>
-     Survey the basin. Restore the relay chain. Find out what is under the floor —
-     and why the dossier does not say what the station was <em>for</em>.`;
+    `Two hundred and fourteen days ago the prospecting station <b>KEEL-4</b> sent nine seconds of
+     unmodulated carrier and stopped. You are the operator of <b>K6 MERIDIAN</b>, put down by
+     descent sled on the floor of <b>Philolaus</b> at seventy-two degrees north.<br><br>
+     Survey the basin. Restore the relay chain. Go down into the collapse the crew were
+     working when they stopped, and find out what the cold has been <em>keeping</em>.`;
 }
 
 function startGame(freeRoam, loadSaved) {
@@ -230,8 +269,8 @@ function startGame(freeRoam, loadSaved) {
   App.state = ST.PLAY;
   App.input.lock();
   App.input.showTouch(true);
-  App.hud.log('MU-7 CASSIOPEIA — SYSTEMS NOMINAL', 'good');
-  App.hud.log('SELENE DIRECTORATE · FAR-SIDE SURVEY DIVISION');
+  App.hud.log('K6 MERIDIAN — SYSTEMS NOMINAL', 'good');
+  App.hud.log('KLINEKRAFT · NORTHFIELD COMMISSION LICENCE 44-C');
 
   if (!resumed && !freeRoam) {
     setTimeout(() => {
@@ -282,6 +321,22 @@ function wireUI() {
     App.state = ST.PLAY; App.input.lock(); App.input.showTouch(true);
     App.audio.ui('ok');
   };
+  /* ---- status tray ----
+     Deliberately NOT a panel: it does not take a state, does not unlock the
+     pointer and does not pause. You open it at a stop, the world keeps
+     running behind it, and the drive controls are underneath it where you
+     left them. A phone player opening the sample bay is not leaving the
+     surface. */
+  $('trayGrip').onclick = () => App.hud.toggleTray();
+  $('trayCodex').onclick = () => { App.hud.setTray(false); App.hud.refreshCodex(App.game); openPanel('codex', ST.CODEX); };
+  $('traySystems').onclick = () => { App.hud.setTray(false); openPanel('pause', ST.PAUSE); };
+  // The relocated controls fire the same key the desktop binding does, so
+  // there is exactly one code path per action and no second implementation
+  // to drift out of step.
+  document.querySelectorAll('[data-press]').forEach(b => {
+    b.onclick = () => { App.input.press(b.dataset.press); App.audio.ui('tick'); };
+  });
+
   // one close path, so the ESC button and the Escape key cannot diverge
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = closePanels);
   addEventListener('beforeunload', () => { if (App.game && App.state >= ST.PLAY) Save.write(App.game.save()); });
@@ -306,10 +361,27 @@ function buildSettingsUI() {
     (i) => {
       S.quality = ['low', 'medium', 'high', 'ultra'][i];
       App.engine.setQuality(S.quality);
-      applyWorldQuality();
-      applySettings();
+      applyLevers();                 // re-applies the overrides and applySettings
       persist();
     });
+  seg('FRAME LIMIT', 'the only lever that reduces heat instead of reacting to it',
+    ['OFF', '60', '45', '30'],
+    () => [0, 60, 45, 30].indexOf(S.fpsCap) < 0 ? 0 : [0, 60, 45, 30].indexOf(S.fpsCap),
+    (i) => { S.fpsCap = [0, 60, 45, 30][i]; applySettings(); persist(); });
+  seg('FRAME PACING', 'steady holds the resolution it finds; smooth chases the budget',
+    ['SMOOTH', 'STEADY', 'FIXED'],
+    () => ['smooth', 'steady', 'fixed'].indexOf(S.pace),
+    (i) => { S.pace = ['smooth', 'steady', 'fixed'][i]; applySettings(); persist(); });
+  seg('TERRAIN DETAIL', 'clipmap rings — the second most expensive thing after pixels',
+    ['NEAR', 'MID', 'FULL'],
+    () => S.detail, (i) => { S.detail = i; applyLevers(); persist(); });
+  seg('GROUND CLUTTER', 'boulder density and the dust budget together',
+    ['SPARSE', 'HALF', 'FULL'],
+    () => S.clutter, (i) => { S.clutter = i; applyLevers(); persist(); });
+  seg('SHADOWS', 'a second full scene pass', ['OFF', 'ON'],
+    () => S.shadows, (i) => { S.shadows = i; applyLevers(); persist(); });
+  rng('RESOLUTION', 'ceiling on the framebuffer, as a fraction of the tier budget',
+    0.55, 1, 0.05, () => S.resScale, (v) => { S.resScale = v; applySettings(); persist(); });
   seg('BLOOM', 'veiling glare around bright sources', ['OFF', 'ON'],
     () => S.bloom ? 1 : 0, (i) => { S.bloom = !!i; App.engine.bloom.enabled = !!i; persist(); });
   seg('SENSOR NOISE', 'grain that rises in shadow', ['OFF', 'LOW', 'FULL'],
@@ -332,8 +404,11 @@ function buildSettingsUI() {
   seg('HUD SIZE', 'scales every instrument panel together', ['SMALL', 'NORMAL', 'LARGE'],
     () => S.hudScale < 0.92 ? 0 : S.hudScale > 1.08 ? 2 : 1,
     (i) => { S.hudScale = [0.82, 1, 1.18][i]; applySettings(); persist(); });
+  seg('ONE-HANDED', 'one stick for steer and throttle; the camera centres itself',
+    ['OFF', 'ON'],
+    () => S.oneHand ? 1 : 0, (i) => { S.oneHand = !!i; applySettings(); persist(); });
   seg('CAMERA AUTO-CENTRE', 'chase view drifts back behind the rover', ['OFF', 'SLOW', 'FAST'],
-    () => S.autoCentre, (i) => { S.autoCentre = i; App.rig.autoCentre = i; persist(); });
+    () => S.autoCentre, (i) => { S.autoCentre = i; applySettings(); persist(); });
   seg('INVERT LOOK', '', ['OFF', 'ON'],
     () => S.invertY ? 1 : 0, (i) => { S.invertY = !!i; applySettings(); persist(); });
   seg('TRACTION CONTROL', 'limits hub torque before the wheels dig in', ['OFF', 'ON'],
@@ -390,7 +465,7 @@ function buildSettingsUI() {
       const i = document.createElement('input');
       i.type = 'range'; i.min = r.min; i.max = r.max; i.step = r.step; i.value = r.get();
       const v = document.createElement('span');
-      v.style.cssText = 'margin-left:10px;font-size:10px;color:#6fe3f5;min-width:34px;display:inline-block';
+      v.style.cssText = 'margin-left:10px;font-size:10px;color:var(--bone);min-width:38px;display:inline-block;text-align:right';
       v.textContent = (+r.get()).toFixed(r.step < 1 ? 2 : 0);
       i.oninput = () => { r.set(+i.value); v.textContent = (+i.value).toFixed(r.step < 1 ? 2 : 0); };
       wrap.appendChild(i); wrap.appendChild(v);
@@ -435,6 +510,31 @@ function applyWorldQuality() {
   App.dust?.setMax(q.dust);
 }
 
+/* Push the player's lever settings into the engine as per-field overrides on
+   top of the tier, then re-fan them through the world objects. Kept separate
+   from applySettings() because it reallocates buffers — the clipmap, the dust
+   pool, the shadow map — and must not run on every slider drag. */
+function applyLevers() {
+  const S = App.settings, base = QUALITY[S.quality] || QUALITY.high;
+  const rings = Math.max(5, base.clipLevels - (2 - S.detail));
+  App.engine.setOverrides({
+    clipLevels: rings,
+    // The rings are power-of-two-spaced, so dropping one halves the drawn
+    // radius. Widen the innermost cell to buy some of it back rather than
+    // pulling the horizon in on the tier that can least afford to lose it.
+    clipM: base.clipM,
+    boulders: Math.round(base.boulders * [0.35, 0.65, 1][S.clutter]),
+    dust: Math.round(base.dust * [0.35, 0.65, 1][S.clutter]),
+    shadow: S.shadows ? base.shadow : 0
+  });
+  applyWorldQuality();
+  // setOverrides goes through setQuality, which rebuilds the composer — and a
+  // rebuilt composer is a NEW ShaderPass with freshly cloned uniforms, so
+  // grain, aberration and the pacing all reset to their defaults unless this
+  // runs after it. Every setQuality() is followed by an applySettings().
+  applySettings();
+}
+
 function applySettings() {
   const S = App.settings, e = App.engine;
   e.final.uniforms.uGrain.value = S.grain;
@@ -442,7 +542,10 @@ function applySettings() {
   e.bloom.enabled = S.bloom;
   App.rig.invertY = S.invertY;
   App.rig.sens = S.sens;
-  App.rig.autoCentre = S.autoCentre;
+  // With one stick there is no look axis at all, so auto-centre is not a
+  // preference any more — it is the only thing aiming the camera.
+  App.rig.autoCentre = S.oneHand ? 2 : S.autoCentre;
+  App.input.setOneHand(S.oneHand);
   App.rig.fovScale = S.fov / 58;
   App.sky.starIntensity = S.stars;
   // Apollo's LRV cruised at ~13 km/h; the arcade default is 30. Every speed
@@ -452,6 +555,7 @@ function applySettings() {
   DRIVE.commsDelay = S.comms ? EARTH_RTT : 0;
   OPS.drillTime = S.realistic ? 45 : 4.2;
   OPS.drainScale = S.realistic ? 0.125 : 1;
+  e.setPacing(S.pace, S.resScale, S.fpsCap);
   // one knob for every instrument dimension; the stylesheet does the rest
   document.documentElement.style.setProperty('--hud-k', S.hudScale);
   if (App.audio.ready) App.audio.setVolumes(S.volSfx, S.volMusic);
@@ -467,7 +571,7 @@ function buildHelpUI() {
       ${row('Ground-penetrating radar', 'G')}${row('Deploy / stow sampling arm', 'R')}
       ${row('Aim arm: reach', 'W', 'S')}${row('Aim arm: swing', 'A', 'D')}
       ${row('Drill at the aim point', 'LMB')}
-      ${row('Deploy relay beacon', 'B')}${row('Deploy / stow solar array', 'T')}
+      ${row('Deploy relay', 'B')}${row('Deploy / stow solar array', 'T')}
       ${row('Interact (hold)', 'E')}
     </div>
     <div class="keygroup"><h4>SYSTEMS</h4>
@@ -481,10 +585,24 @@ function buildHelpUI() {
       ${row('In photo mode: up / down', 'Q', 'Z')}${row('In photo mode: boost', 'SHIFT')}
       ${row('Save the frame as a PNG', 'K')}
     </div>
+    <div class="keygroup"><h4>ON A PHONE</h4>
+      <div class="keyrow"><span>Left stick drives, right stick looks.</span></div>
+      <div class="keyrow"><span>On screen: SCAN · ARM · DRILL · LAMP · RELAY · BRAKE. Nothing else is
+        pressed while the wheels are turning.</span></div>
+      <div class="keyrow"><span>RIGHT and HOLD appear in the middle only when they can do something.</span></div>
+      <div class="keyrow"><span>STATUS, at the bottom edge, holds the sample bay, thermal, wheel loads,
+        the radar scope, the compass, the clock, the camera and the codex.</span></div>
+      <div class="keyrow"><span>ONE-HANDED in SYSTEMS drops to a single stick and centres the camera
+        for you.</span></div>
+    </div>
     <div class="keygroup"><h4>NOTES FROM THE OPERATIONS MANUAL</h4>
       <div class="keyrow"><span>One sixth of a gravity is one sixth of the grip. Brake early.</span></div>
       <div class="keyrow"><span>The radar reaches 78 m. Sweep, then drive to the return.</span></div>
       <div class="keyrow"><span>Park, deploy the arm, put the reticle on the marker, then drill.</span></div>
+      <div class="keyrow"><span>The ground does not dig the same everywhere. Firm ejecta carries you;
+        rim talus and the dark flats do not.</span></div>
+      <div class="keyrow"><span>Sinkage grows with slip. If the wheels are turning faster than the
+        ground is moving you are digging, not driving — ease off and it stops.</span></div>
       <div class="keyrow"><span>Shadowed ground does not charge the array. Watch the terminator.</span></div>
       <div class="keyrow"><span>The sled recharges you and takes your samples. It is 400 m of nothing away.</span></div>
     </div>`;
@@ -498,9 +616,25 @@ function buildHelpUI() {
    ============================================================ */
 let last = performance.now(), acc = 0, fpsT = 0, fpsN = 0;
 
+/* Nothing behind a menu is worth 60 Hz, and a phone left on the pause panel
+   used to keep the GPU at full tilt for as long as the player was reading. */
+const PANEL_HZ = 20;
+
+/* Skip whole rAF callbacks rather than sleeping inside one. A 30 Hz cap on a
+   60 Hz display means drawing every other frame and letting the SoC idle in
+   between, which is the point — a phone that never gets hot never throttles.
+   `last` is deliberately not advanced on a skipped frame, so the delta the
+   simulation sees is the real time between the frames it actually drew.
+
+   The 2 ms tolerance keeps a 60 Hz cap from missing every other 60 Hz vsync
+   because the callback arrived a fraction early. */
 function frame(now) {
   requestAnimationFrame(frame);
-  let dt = (now - last) / 1000; last = now;
+  const dtRaw = (now - last) / 1000;
+  const cap = App.state === ST.PLAY ? (App.settings.fpsCap | 0) : PANEL_HZ;
+  if (cap > 0 && dtRaw < 1 / cap - 0.002) return;
+  last = now;
+  let dt = dtRaw;
   if (dt > 0.1) dt = 0.1;
   tick(dt);
 }
@@ -526,6 +660,9 @@ function tick(dt) {
   if (input.hit('KeyH') && App.state >= ST.PLAY) {
     App.settings.hudOn = !App.settings.hudOn;
     App.hud.el.hud.style.opacity = App.settings.hudOn ? '' : '0';
+    // the tray is part of the HUD, not part of the world
+    if (!App.settings.hudOn) App.hud.setTray(false);
+    App.hud.el.tray.style.opacity = App.settings.hudOn ? '' : '0';
   }
 
   if (playing) stepWorld(dt, raw, input);
@@ -809,7 +946,7 @@ addEventListener('error', (e) => {
   const t = $('loadtext');
   if (t && !$('boot').classList.contains('hidden')) {
     t.textContent = 'LINK FAILURE — ' + (e.message || 'unknown');
-    t.style.color = '#ff5f56';
+    t.style.color = UI.emergency;
   }
   console.error(e.error || e.message);
 });
@@ -817,7 +954,7 @@ addEventListener('error', (e) => {
 boot().catch((err) => {
   console.error(err);
   const t = $('loadtext');
-  if (t) { t.textContent = 'LINK FAILURE — ' + err.message; t.style.color = '#ff5f56'; }
+  if (t) { t.textContent = 'LINK FAILURE — ' + err.message; t.style.color = UI.emergency; }
 });
 
-void PLAYABLE_R; void QUALITY; void Props;
+void PLAYABLE_R; void Props;

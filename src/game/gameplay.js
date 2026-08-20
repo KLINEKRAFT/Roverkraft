@@ -9,9 +9,17 @@ import { PLAYABLE_R } from '../world/terrain.js';
 import { HOME } from '../world/props.js';
 import { CODEX, SAMPLES, MISSIONS } from './lore.js';
 import { POWER_FLOOR, POWER_KNEE } from './rover.js';
+import { UI, hexOf } from '../ui/theme.js';
 
 export const STATION = { x: -236, z: 140 };
-export const MASSIF = { x: 0, z: 0 };
+/* The collapse. Phase 7 carves the hole; this is the point everything —
+   missions, map, compass, the vein drainage — agrees it is at. */
+export const PIT = { x: 0, z: 0 };
+
+/* Named points the mission data refers to. A mission says `poi: 'STATION'`
+   rather than importing a coordinate, which is what lets lore.js be text and
+   data with no reach into the world. */
+export const POI = { HOME, STATION, PIT };
 
 const BAY_MAX = 6;
 const SCAN_RANGE = 78;
@@ -64,8 +72,15 @@ export class Game {
     this.relaysPlaced = 0;
     this.excavated = 0;
     this.stationVisited = false;
-    this.nodeTaken = false;
+    this.coreTaken = false;
     this.transmitted = false;
+    /* Capabilities and revealed points of interest, by name.
+       These replace the `missionIdx < 4` / `=== 4` / `>= 3` comparisons that
+       used to gate content by POSITION in the campaign. Those comparisons are
+       why inserting a mission in the middle silently pointed the deep-drill
+       gate and the station prompt at the wrong one. A mission now says what it
+       reveals and what it grants; nothing counts. */
+    this.flags = new Set();
     this.scan = { active: false, r: 0, t: 0, cool: 0, x: 0, z: 0 };
     this.drill = { active: false, t: 0, target: null };
     this.interact = { key: null, t: 0 };
@@ -78,6 +93,40 @@ export class Game {
       this.missionIdx = MISSIONS.length;
       for (const c of CODEX) this.unlocked.add(c.id);
     }
+    this.syncFlags();
+  }
+
+  /* ============================================================
+     mission state, by name rather than by index
+     ============================================================ */
+
+  /** Re-derive flags from the campaign position. Idempotent, so reset(),
+      advance() and load() can all just call it. In free survey everything is
+      revealed and granted — there is no campaign left to gate against. */
+  syncFlags() {
+    this.flags.clear();
+    const upTo = this.freeRoam ? MISSIONS.length : Math.min(this.missionIdx + 1, MISSIONS.length);
+    for (let i = 0; i < upTo; i++) {
+      const m = MISSIONS[i];
+      for (const p of m.reveals || []) this.flags.add('poi:' + p);
+      for (const g of m.grants || []) this.flags.add(g);
+    }
+    if (this.freeRoam) {
+      for (const k of Object.keys(POI)) this.flags.add('poi:' + k);
+      this.flags.add('deepString');
+    }
+    // somewhere you have already been is somewhere you know about
+    if (this.stationVisited) this.flags.add('poi:STATION');
+  }
+
+  /** Is this capability available? */
+  can(flag) { return this.flags.has(flag); }
+  /** Should the map and the compass admit this place exists? */
+  revealed(poi) { return this.flags.has('poi:' + poi); }
+  /** Is this objective part of the CURRENT mission and still outstanding? */
+  objActive(id) {
+    const m = this.mission;
+    return !!m && !this.objDone[id] && m.objectives.some(o => o.id === id);
   }
 
   /* ============================================================
@@ -93,20 +142,22 @@ export class Game {
       });
     };
 
-    // the lattice: tubes radiating from the massif in a hex arrangement
+    // the drainage: volatile veins running downhill toward the collapse
     for (let ring = 1; ring <= 5; ring++) {
       const n = 4 + ring * 2;
       for (let i = 0; i < n; i++) {
         const a = (i / n) * Math.PI * 2 + ring * 0.31;
         const r = 58 + ring * 62 + (rng() - 0.5) * 26;
-        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        const x = PIT.x + Math.cos(a) * r, z = PIT.z + Math.sin(a) * r;
         if (Math.hypot(x, z) > PLAYABLE_R - 26) continue;
         if (this.terrain.slopeAt(x, z) > 26) continue;
-        push(x, z, 'tube', 3.4 + rng() * 1.4);
+        push(x, z, 'vein', 3.4 + rng() * 1.4);
       }
     }
     // ordinary science, scattered
     const kinds = ['regolith', 'breccia', 'ilmenite', 'agglutinate', 'pyroclast', 'meteoritic'];
+    // (unchanged order and count — buildAnomalies feeds a POSITIONAL save
+    // array, so any reshuffle here has to come with a save.js KEY bump)
     for (let i = 0; i < 46; i++) {
       const a = rng() * Math.PI * 2, r = 40 + rng() * (PLAYABLE_R - 70);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
@@ -114,10 +165,11 @@ export class Game {
       const t = kinds[Math.floor(Math.pow(rng(), 1.6) * kinds.length)];
       push(x, z, t, 1.2 + rng() * 2.2);
     }
-    // the deep core under the massif — only reachable in mission 5
-    push(MASSIF.x + 6, MASSIF.z - 4, 'core', 11.0, 'node');
-    // the film sample, at the station's own dig site
-    push(STATION.x + 14, STATION.z + 9, 'film', 4.1, 'film');
+    // the deep core off the pit floor — needs the 11 m string, which the last
+    // mission grants; before that the drill refuses rather than lying
+    push(PIT.x + 6, PIT.z - 4, 'deep', 11.0, 'deep');
+    // the horizon layer, at the station's own dig site
+    push(STATION.x + 14, STATION.z + 9, 'horizon', 4.1, 'horizon');
   }
 
   /* ============================================================
@@ -141,28 +193,71 @@ export class Game {
     this.hud.flashDiscovery('CODEX UPDATED', e.title, e.meta);
   }
 
+  /** Complete an objective of the CURRENT mission.
+
+      Scoped deliberately. Unscoped, docking with a full bay during mission one
+      set `home1`, so mission two opened with one of its two objectives already
+      ticked and no way to un-tick it. An objective belongs to the mission that
+      asked for it. */
   complete(objId) {
-    if (this.objDone[objId]) return;
+    const m = this.mission;
+    if (!m || this.objDone[objId]) return;
+    const o = m.objectives.find(x => x.id === objId);
+    if (!o) return;
     this.objDone[objId] = true;
     this.audio.ui('ok');
     this.hud.missionDirty = true;
-    const m = this.mission;
-    if (m && m.objectives.every(o => this.objDone[o.id])) {
+    this._fire(o.on);
+    if (m.objectives.every(x => this.objDone[x.id])) {
       setTimeout(() => this.advance(), 1400);
     }
   }
   bump(objId, n = 1) {
-    this.counts[objId] = (this.counts[objId] || 0) + n;
-    this.hud.missionDirty = true;
     const m = this.mission;
     const o = m && m.objectives.find(x => x.id === objId);
-    if (o && o.count && this.counts[objId] >= o.count) this.complete(objId);
+    if (!o) return;
+    this.counts[objId] = (this.counts[objId] || 0) + n;
+    this.hud.missionDirty = true;
+    if (o.count && this.counts[objId] >= o.count) this.complete(objId);
+  }
+
+  /** Side effects an objective declares in its `on` block. */
+  _fire(on) {
+    if (!on) return;
+    for (const id of [].concat(on.unlock || [])) this.unlock(id);
+    if (on.log) this.log(on.log[0], on.log[1]);
+  }
+
+  /** Objectives that watch the world rather than waiting to be told.
+      `watch` handles STATES — where you are, how far. Events (a sample
+      stowed, a relay planted, a sweep run) call complete() from the code that
+      raises them, because an event is not a state you can test for. */
+  _watchObjectives() {
+    const m = this.mission;
+    if (!m) return;
+    for (const o of m.objectives) {
+      const w = o.watch;
+      if (!w || this.objDone[o.id]) continue;
+      const p = POI[w.poi];
+      if (!p) continue;
+      const d = this.distTo(p.x, p.z);
+      if (w.kind === 'far' && d > w.m) this.complete(o.id);
+      else if (w.kind === 'near' && d < w.m) {
+        // optional height gate: "inside the pit" is not the same place as
+        // "standing on its rim", and both are within 40 m of the centre
+        const h = this.terrain.heightAt(this.rover.pos.x, this.rover.pos.z);
+        if (w.maxH !== undefined && h > w.maxH) continue;
+        if (w.minH !== undefined && h < w.minH) continue;
+        this.complete(o.id);
+      }
+    }
   }
 
   advance() {
     const done = this.mission;
     if (!done) return;
     this.missionIdx++;
+    this.syncFlags();
     this.log(`${done.tag} COMPLETE — ${done.name}`, 'good');
     this.audio.discovery();
     if (this.mission) {
@@ -170,8 +265,8 @@ export class Game {
       this.hud.missionDirty = true;
     } else {
       this.hud.showCard({
-        tag: 'OPERATION ANAXAGORAS', name: 'TRANSMITTED',
-        brief: `The uplink closed forty seconds ago. Whatever happens to the record now happens on Earth, in a building with a lobby and a receptionist and a legal department.\n\nYou are still here. The basin is still here. Under your wheels, four metres down, nine square kilometres of glass pipe is drawing charge at a rate you measured yourself.\n\nEleven months.`,
+        tag: 'OPERATION NORTHFIELD', name: 'TRANSMITTED',
+        brief: `The uplink closed forty seconds ago. Whatever happens to the record now happens on Earth, in a building with a lobby and a receptionist and a legal department.\n\nYou are still here. The basin is still here. Four hundred metres west, under ninety metres of permanent shadow, a cold trap that has kept its post for three and a half million years is losing three quarters of a kelvin a decade from underneath.\n\nEleven months.`,
         objectives: [{ id: '_', text: 'Free survey unlocked — the basin is yours' }]
       });
       this.freeRoam = true;
@@ -197,11 +292,12 @@ export class Game {
     let hits = 0, deep = 0;
     for (const a of this.anoms) {
       if (a.found || a.taken) continue;
-      if (a.special === 'node' && this.missionIdx < 4) continue;
+      // a return you cannot reach is a return you should not be shown
+      if (a.special === 'deep' && !this.can('deepString')) continue;
       const d = Math.hypot(a.x - this.scan.x, a.z - this.scan.z);
       if (d > SCAN_RANGE) continue;
       a.found = true; hits++;
-      if (a.type === 'tube' || a.special) deep++;
+      if (a.type === 'vein' || a.special) deep++;
       this.addMarker(a);
     }
     if (hits) {
@@ -216,16 +312,23 @@ export class Game {
 
   addMarker(a) {
     const g = new THREE.Group();
+    /* A radar return standing in the world is a reading, not a control, so it
+       takes the data colour — except the ones that are mission targets, which
+       take the science colour the map and the compass give them. Same palette
+       as the HUD, from the same file, so a marker and its map dot can never
+       disagree about what they are. */
+    const col = hexOf(a.special || a.type === 'vein' ? UI.science : UI.data);
+    const post0 = hexOf(UI.data);
     const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.05, 26),
-      new THREE.MeshBasicMaterial({ color: a.special || a.type === 'tube' ? 0xffb454 : 0x2ad2ff,
+      new THREE.MeshBasicMaterial({ color: col,
         transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending }));
     ring.rotation.x = -Math.PI / 2;
     g.add(ring);
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 2.2, 6),
-      new THREE.MeshBasicMaterial({ color: 0x2ad2ff, transparent: true, opacity: 0.35, depthWrite: false }));
+      new THREE.MeshBasicMaterial({ color: post0, transparent: true, opacity: 0.35, depthWrite: false }));
     post.position.y = 1.1; g.add(post);
     const cap = new THREE.Mesh(new THREE.OctahedronGeometry(0.16),
-      new THREE.MeshBasicMaterial({ color: a.special || a.type === 'tube' ? 0xffb454 : 0x2ad2ff }));
+      new THREE.MeshBasicMaterial({ color: col }));
     cap.position.y = 2.3; g.add(cap);
     g.position.set(a.x, this.terrain.heightAt(a.x, a.z) + 0.04, a.z);
     g.userData.cap = cap;
@@ -263,7 +366,7 @@ export class Game {
     if (this.power < DRILL_COST) { this.log('INSUFFICIENT POWER FOR DRILL CYCLE', 'warn'); this.audio.ui('bad'); return; }
     if (this.rover.vel.length() > 1.1) { this.log('BRAKE BEFORE DRILLING', 'warn'); return; }
     const a = this.nearestAnom();
-    if (a && a.special === 'node' && this.missionIdx < 4) {
+    if (a && a.special === 'deep' && !this.can('deepString')) {
       this.log('DRILL STRING TOO SHORT — 11 m TARGET', 'warn'); this.audio.ui('bad'); return;
     }
     this.drill.active = true; this.drill.t = 0; this.drill.target = a;
@@ -282,8 +385,7 @@ export class Game {
       if (a.marker) { this.scene.remove(a.marker); a.marker = null; }
       this.excavated++;
       this.bump('find3');
-      if (a.special === 'node') { this.nodeTaken = true; this.complete('deep'); }
-      if (a.special === 'film') this.unlock('charge');
+      if (a.special === 'deep') { this.coreTaken = true; this.complete('deep'); }
       this.hud.mapDirty = true;
     }
     if (def.unlock) this.unlock(def.unlock);
@@ -357,7 +459,7 @@ export class Game {
       const fy = this.terrain.heightAt(fx, fz);
       if (Math.random() < dt * 55) {
         this.dust.spawn(3, fx, fy, fz, 0.9 + Math.random() * 0.7, 0.35,
-          0, 0, this.drill.target && (this.drill.target.type === 'tube' || this.drill.target.special) ? 0.85 : 0);
+          0, 0, this.drill.target && (this.drill.target.type === 'vein' || this.drill.target.special) ? 0.85 : 0);
       }
       this.rig.addShake(dt * 0.6);
       this.terrain.excavate(fx, fz, 0.9, dt * 0.55);
@@ -413,34 +515,25 @@ export class Game {
         this.log(`${n} SAMPLE${n > 1 ? 'S' : ''} STOWED${rare ? ` · ${rare} FLAGGED` : ''}`, 'good');
         this.audio.ui('ok');
         this.complete('home1');
-        if (this.missionIdx === 4 && this.nodeTaken) {
+        if (this.coreTaken && this.objActive('transmit')) {
           this.transmitted = true;
-          this.unlock('node'); this.unlock('lasthour'); this.unlock('transmission');
+          this.unlock('lasthour'); this.unlock('transmission');
           this.complete('transmit');
         }
       }
       if (this.hull < 100) this.hull = Math.min(100, this.hull + 9 * dt);
     }
 
-    /* ---- objectives that watch the world ---- */
-    if (this.mission) {
-      if (!this.objDone.drive && this.distTo(HOME.x, HOME.z) > 120) this.complete('drive');
-      if (!this.objDone.reach && this.distTo(STATION.x, STATION.z) < 26) {
-        this.complete('reach');
-        this.unlock('roster');
-        this.log('BEACON-9 PERIMETER — NO POWER SIGNATURE', 'warn');
-      }
-      if (!this.objDone.massif && this.distTo(MASSIF.x, MASSIF.z) < 46 &&
-          this.terrain.heightAt(this.rover.pos.x, this.rover.pos.z) > 12) {
-        this.complete('massif');
-        this.log('CENTRAL MASSIF — LATTICE CONVERGENCE POINT');
-      }
-    }
+    /* ---- objectives that watch the world ----
+       One loop over the current mission's `watch` declarations, instead of a
+       hand-written distance test per objective with its unlock and its log
+       line inlined next to it. Adding "drive to X" is now a data change. */
+    this._watchObjectives();
 
     /* ---- context prompt ---- */
     let prompt = null, key = null;
     const dStation = this.distTo(STATION.x, STATION.z);
-    if (dStation < 12 && !this.stationVisited && this.missionIdx >= 3) {
+    if (dStation < 12 && !this.stationVisited && this.objActive('recover')) {
       prompt = 'HOLD <kbd>E</kbd> — INTERROGATE LOCAL STORE'; key = 'station';
     } else {
       const a = this.nearestAnom();
@@ -463,6 +556,7 @@ export class Game {
       if (this.interact.t > 1.6) {
         this.interact.t = 0;
         this.stationVisited = true;
+        this.flags.add('poi:STATION');
         this.complete('recover');
         this.unlock('log6'); this.unlock('log11');
         this.log('LOCAL STORE RECOVERED — 3 LOG FRAGMENTS', 'good');
@@ -472,9 +566,11 @@ export class Game {
     this.hud.interactProgress = key ? this.interact.t / 1.6 : 0;
 
     /* ---- rollover rescue ---- */
+    let canRight = false;
     if (this.rover.flipped && this.rover.vel.length() < 1.2) {
       this.flipTimer += dt;
       if (this.flipTimer > 2.4) {
+        canRight = true;
         this.hud.setPrompt('<kbd>X</kbd> — RIGHT THE CHASSIS');
         if (input.hit('KeyX')) {
           this.rover.quat.setFromAxisAngle(new THREE.Vector3(0, 1, 0),
@@ -489,6 +585,14 @@ export class Game {
         }
       }
     } else this.flipTimer = 0;
+
+    /* ---- contextual thumb controls ----
+       Righting the chassis and the interact hold are the two actions a phone
+       player could not perform at all: neither had a touch binding, so a
+       rollover was unrecoverable and the station's local store was
+       unreadable. They appear only when they can do something, which keeps
+       the thumb furniture to what you press while moving. */
+    input.setContext?.({ right: canRight, interact: !!key });
 
     /* ---- markers ---- */
     for (const a of this.anoms) {
@@ -539,7 +643,7 @@ export class Game {
       relaysPlaced: this.relaysPlaced,
       power: this.power, hull: this.hull, met: this.met,
       pos: [this.rover.pos.x, this.rover.pos.z],
-      stationVisited: this.stationVisited, nodeTaken: this.nodeTaken,
+      stationVisited: this.stationVisited, coreTaken: this.coreTaken,
       odo: this.rover.odo
     };
   }
@@ -552,7 +656,10 @@ export class Game {
     this.unlocked = new Set(d.unlocked || []);
     this.relaysPlaced = d.relaysPlaced || 0;
     this.power = d.power ?? 100; this.hull = d.hull ?? 100; this.met = d.met || 0;
-    this.stationVisited = !!d.stationVisited; this.nodeTaken = !!d.nodeTaken;
+    this.stationVisited = !!d.stationVisited; this.coreTaken = !!d.coreTaken;
+    // flags are derived, never stored: the campaign position is the truth and
+    // a stored copy is one more thing that can disagree with it
+    this.syncFlags();
     if (d.anoms) d.anoms.forEach((v, i) => {
       const a = this.anoms[i]; if (!a) return;
       if (v === 1) a.taken = true;

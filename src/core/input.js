@@ -13,6 +13,13 @@ export class Input {
     this.touch = { lx: 0, ly: 0, rx: 0, ry: 0, active: false, btn: {} };
     this.pad = null;
     this.enabled = true;
+    /* One-handed drive. Twin thumbsticks presume two hands, and a meaningful
+       share of phone sessions are one-handed — on a train, holding something
+       else. With this on there is a single stick doing steer and throttle, the
+       look stick is gone (the camera auto-centres instead) and the buttons
+       stack above the stick on the same side. */
+    this.oneHand = false;
+    this._transient = [];          // keys pressed by UI this frame
 
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
@@ -57,39 +64,67 @@ export class Input {
   down(...codes) { return codes.some(c => this.keys.has(c)); }
   hit(...codes) { return codes.some(c => this.pressed.has(c)); }
 
+  /** Fire a key from a UI control — a tray button, a context prompt. Held for
+      exactly one frame, so it behaves like a tap and never like a stuck key.
+      Edge-triggered reads only see it between poll() and endFrame(), which is
+      where every `hit()` in the frame loop lives. */
+  press(code) {
+    this.keys.add(code);
+    this.pressed.add(code);
+    this._transient.push(code);
+  }
+
   /* ---------------- touch ----------------
-     Two thumbsticks plus a button column. The right stick is a LOOK stick, not
-     a position stick: it feeds a rate, so you can keep panning past the edge of
-     its travel. Buttons that map to a held key (brake, drill) latch on
-     touchstart and release on touchend; the rest are momentary. */
+     The bottom third of a phone belongs to the thumbs. What sits there is only
+     what you press while the rover is moving; everything else — camera, array,
+     photo, HUD toggle — is in the status tray, one reach away at a stop.
+
+     Two buttons are CONTEXTUAL and appear only when they can do something:
+     righting the chassis, and the interact hold. Neither had a touch control
+     at all, which meant a phone player who rolled over could not recover and
+     could not open the station's local store. A control you cannot reach is
+     not a control.
+
+     The right stick is a LOOK stick, not a position stick: it feeds a rate, so
+     you can keep panning past the edge of its travel. Buttons that map to a
+     held key (brake, drill, interact) latch on touchstart and release on
+     touchend; the rest are momentary. */
   buildTouch() {
     if (!matchMedia('(pointer: coarse)').matches && !('ontouchstart' in window)) return;
-    const wrap = document.createElement('div'); wrap.id = 'touch'; wrap.className = 'hidden';
+    if (this.touchEl) { this.touchEl.remove(); this.touchEl = null; }
+
+    const one = this.oneHand;
+    const btn = (attr, label, cls) => `<button class="tb${cls ? ' ' + cls : ''}" ${attr}>${label}</button>`;
+    // science on one column, drive and systems on the other — grouped by what
+    // the control does, so position teaches the function without a legend
+    const sci = btn('data-k="KeyG"', 'SCAN', 'sci') + btn('data-k="KeyR"', 'ARM', 'sci') +
+                btn('data-lmb="1"', 'DRILL', 'sci big');
+    const sys = btn('data-k="KeyF"', 'LAMP') + btn('data-k="KeyB"', 'RELAY') +
+                btn('data-k="Space" data-hold="1"', 'BRAKE', 'big');
+
+    const wrap = document.createElement('div');
+    wrap.id = 'touch';
+    wrap.className = 'hidden' + (one ? ' one-hand' : '');
     wrap.innerHTML = `
-      <div class="stick left"><div class="nub"></div><span>DRIVE</span></div>
-      <div class="stick right"><div class="nub"></div><span>LOOK</span></div>
-      <div class="tbtns">
-        <button class="tb" data-k="KeyG">SCAN</button>
-        <button class="tb" data-k="KeyR">ARM</button>
-        <button class="tb" data-lmb="1">DRILL</button>
-        <button class="tb" data-k="KeyB">RELAY</button>
-      </div>
-      <div class="tbtns2">
-        <button class="tb" data-k="KeyC">CAM</button>
-        <button class="tb" data-k="KeyF">LAMP</button>
-        <button class="tb" data-k="KeyT">ARRAY</button>
-        <button class="tb" data-k="KeyH">HUD</button>
-        <button class="tb" data-k="KeyK">SHOT</button>
-        <button class="tb wide" data-k="Space" data-hold="1">BRAKE</button>
+      <div class="stick ${one ? 'right' : 'left'} drive"><div class="nub"></div><span>DRIVE</span></div>
+      ${one ? '' : '<div class="stick right look"><div class="nub"></div><span>LOOK</span></div>'}
+      <div class="tbtns">${sci}</div>
+      <div class="tbtns2">${sys}</div>
+      <div class="tctx">
+        ${btn('data-k="KeyX"', 'RIGHT', 'danger hidden')}
+        ${btn('data-k="KeyE" data-hold="1"', 'HOLD', 'hidden')}
       </div>`;
     document.body.appendChild(wrap);
     // the stylesheet keeps the HUD clear of the thumb zone off this class, so
     // it is set by the code that puts the sticks on screen and nothing else
     document.body.classList.add('touch-controls');
+    document.body.classList.toggle('one-hand', one);
     this.touchEl = wrap;
+    this.ctxEl = wrap.querySelector('.tctx');
     this.touch.active = true;
 
-    wrap.querySelectorAll('.stick').forEach((s, i) => {
+    wrap.querySelectorAll('.stick').forEach((s) => {
+      const look = s.classList.contains('look');
       const nub = s.querySelector('.nub');
       let id = null;
       const set = (x, y) => {
@@ -97,13 +132,13 @@ export class Input {
         let dx = (x - r.left - r.width / 2) / (r.width / 2);
         let dy = (y - r.top - r.height / 2) / (r.height / 2);
         const l = Math.hypot(dx, dy); if (l > 1) { dx /= l; dy /= l; }
-        nub.style.transform = `translate(${dx * 32}px, ${dy * 32}px)`;
-        if (i === 0) { this.touch.lx = dx; this.touch.ly = dy; }
-        else { this.touch.rx = dx; this.touch.ry = dy; }
+        nub.style.transform = `translate(${dx * r.width * 0.25}px, ${dy * r.width * 0.25}px)`;
+        if (look) { this.touch.rx = dx; this.touch.ry = dy; }
+        else { this.touch.lx = dx; this.touch.ly = dy; }
       };
       const clear = () => {
         id = null; nub.style.transform = '';
-        if (i === 0) { this.touch.lx = this.touch.ly = 0; } else { this.touch.rx = this.touch.ry = 0; }
+        if (look) { this.touch.rx = this.touch.ry = 0; } else { this.touch.lx = this.touch.ly = 0; }
       };
       s.addEventListener('touchstart', (e) => {
         const t = e.changedTouches[0]; id = t.identifier; set(t.clientX, t.clientY); e.preventDefault();
@@ -133,6 +168,30 @@ export class Input {
       b.addEventListener('touchend', up);
       b.addEventListener('touchcancel', up);
     });
+  }
+
+  /** Rebuild the thumb furniture for the other grip. Cheap — the overlay is
+      nine elements — and rebuilding is the only honest way to change which
+      sticks exist. */
+  setOneHand(on) {
+    if (!!on === this.oneHand) return;
+    this.oneHand = !!on;
+    const wasVisible = this.touchEl && !this.touchEl.classList.contains('hidden');
+    this.touch.lx = this.touch.ly = this.touch.rx = this.touch.ry = 0;
+    this.buildTouch();
+    if (wasVisible) this.showTouch(true);
+  }
+
+  /** Show a contextual thumb button only while it can actually do something.
+      @param o {right, interact} */
+  setContext(o) {
+    if (!this.ctxEl) return;
+    const set = (sel, on) => {
+      const b = this.ctxEl.querySelector(sel);
+      if (b && b.classList.contains('hidden') === !!on) b.classList.toggle('hidden', !on);
+    };
+    set('[data-k="KeyX"]', o.right);
+    set('[data-k="KeyE"]', o.interact);
   }
 
   /** Touch overlay only belongs on screen while you are actually driving. */
@@ -203,5 +262,12 @@ export class Input {
     return out;
   }
 
-  endFrame() { this.pressed.clear(); this.mouse.clicked = false; }
+  endFrame() {
+    this.pressed.clear();
+    this.mouse.clicked = false;
+    if (this._transient.length) {
+      for (const c of this._transient) this.keys.delete(c);
+      this._transient.length = 0;
+    }
+  }
 }

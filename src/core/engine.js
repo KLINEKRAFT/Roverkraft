@@ -139,7 +139,13 @@ const FinalShader = {
 export class Engine {
   constructor(canvas, qualityKey = 'high') {
     this.canvas = canvas;
-    this.quality = QUALITY[qualityKey] || QUALITY.high;
+    this.qualityKey = QUALITY[qualityKey] ? qualityKey : 'high';
+    /* Per-field overrides on top of the tier, so the levers that matter on a
+       phone — rings, boulders, dust, shadows — can be turned on the device
+       that is actually thermally limited rather than guessed at here. The tier
+       table stays the reference; this is what the player moves. */
+    this.overrides = {};
+    this.quality = Object.assign({}, QUALITY[this.qualityKey]);
 
     this.renderer = new THREE.WebGLRenderer({
       canvas, antialias: false, alpha: false, stencil: false,
@@ -152,8 +158,29 @@ export class Engine {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.autoClear = true;
 
-    this.renderScale = 1;      // governor multiplier on top of the pixel budget
-    this.adaptive = true;
+    /* ---- frame pacing ----
+       `renderScale` is the governor's multiplier on top of the pixel budget.
+       `scaleCap` is the player's ceiling on it, `minScale` the floor.
+
+       Three modes, because a phone and a desktop want different things:
+
+         smooth  the upstream governor — chases the budget in both directions.
+                 Right on a machine whose thermal headroom does not move.
+         steady  ratchets DOWN only. Once a session has found a scale the
+                 device can actually hold, it holds it. A stable soft image
+                 beats a sharp one that decays over ten minutes, and the
+                 decay is what a player reads as "it looked better earlier".
+         fixed   governor off. renderScale is exactly scaleCap.
+
+       `frameBudget` is the ms the pacing aims at, set from the frame limiter
+       so a 30 fps cap does not have the governor fighting for 16 ms. */
+    this.renderScale = 1;
+    this.scaleCap = 1;
+    this.minScale = 0.62;
+    this.paceMode = 'smooth';
+    this.frameBudget = 1000 / 60;
+    this.adaptive = true;                      // legacy alias; false === 'fixed'
+    this._overBudget = 0;
     this.caps = {
       floatLinear: this.renderer.extensions.has('OES_texture_float_linear'),
       maxTex: this.renderer.capabilities.maxTextureSize,
@@ -226,8 +253,19 @@ export class Engine {
     this.composer.addPass(this.final);
   }
 
+  /** Merge per-field overrides over the current tier and re-apply. Pass a
+      field as null to drop the override and fall back to the tier value. */
+  setOverrides(o) {
+    for (const [k, v] of Object.entries(o || {})) {
+      if (v === null || v === undefined) delete this.overrides[k];
+      else this.overrides[k] = v;
+    }
+    this.setQuality(this.qualityKey);
+  }
+
   setQuality(key) {
-    this.quality = QUALITY[key] || QUALITY.high;
+    if (QUALITY[key]) this.qualityKey = key;
+    this.quality = Object.assign({}, QUALITY[this.qualityKey], this.overrides);
     this.renderer.shadowMap.enabled = this.quality.shadow > 0;
     this.sun.castShadow = this.quality.shadow > 0;
     if (this.sun.castShadow && this.sun.shadow.map) {
@@ -249,18 +287,58 @@ export class Engine {
   }
 
   /** Rolling frame-time governor. Trades resolution for a steady frame rate
-      before the player ever notices, and gives it back when there is headroom. */
+      before the player ever notices.
+
+      Thresholds are fractions of `frameBudget` rather than the literal 23 ms
+      and 13.5 ms they used to be: with a 30 fps limiter those constants had
+      the governor permanently convinced it had headroom and permanently
+      handing resolution back to a device that was about to throttle. */
   governor(dt) {
-    if (!this.adaptive) return;
+    if (this.paceMode === 'fixed' || !this.adaptive) return;
     this._ft = this._ft === undefined ? dt : this._ft * 0.92 + dt * 0.08;
     this._govT = (this._govT || 0) + dt;
     if (this._govT < 1.1) return;
     this._govT = 0;
+
     const ms = this._ft * 1000;
+    const hi = this.frameBudget * 1.38;        // over budget: shed pixels
+    const lo = this.frameBudget * 0.82;        // comfortable: room to spare
     const before = this.renderScale;
-    if (ms > 23 && this.renderScale > 0.62) this.renderScale = Math.max(0.62, this.renderScale - 0.08);
-    else if (ms < 13.5 && this.renderScale < 1) this.renderScale = Math.min(1, this.renderScale + 0.06);
+
+    if (ms > hi) {
+      // Two consecutive windows before stepping down. One is a hitch — a
+      // texture upload, a clipmap rebuild — and stepping on it makes the
+      // governor itself the source of the pumping it exists to prevent.
+      if (++this._overBudget >= 2 && this.renderScale > this.minScale) {
+        this.renderScale = Math.max(this.minScale, this.renderScale - 0.08);
+        this._overBudget = 0;
+      }
+    } else {
+      this._overBudget = 0;
+      // steady mode never climbs. See the class comment: the ratchet is the
+      // point, not a limitation.
+      if (this.paceMode === 'smooth' && this.renderScale < this.scaleCap && ms < lo) {
+        this.renderScale = Math.min(this.scaleCap, this.renderScale + 0.06);
+      }
+    }
+    if (this.renderScale > this.scaleCap) this.renderScale = this.scaleCap;
     if (Math.abs(this.renderScale - before) > 0.005) this.resize();
+  }
+
+  /** Frame pacing, from the settings panel.
+      @param mode  'smooth' | 'steady' | 'fixed'
+      @param cap   ceiling on renderScale, 0.55…1
+      @param fps   frame limit in Hz, 0 for uncapped */
+  setPacing(mode, cap, fps) {
+    this.paceMode = mode;
+    this.adaptive = mode !== 'fixed';
+    this.scaleCap = Math.max(0.4, Math.min(1, cap));
+    this.frameBudget = 1000 / (fps > 0 ? fps : 60);
+    // Fixed and steady both start AT the cap: steady then ratchets down from
+    // there and stays, which is the whole contract.
+    if (mode === 'fixed' || this.renderScale > this.scaleCap) this.renderScale = this.scaleCap;
+    this._overBudget = 0;
+    this.resize();
   }
 
   resize() {
@@ -280,7 +358,17 @@ export class Engine {
 
   /** keep the shadow frustum tight around the rover so 2 k feels like 8 k */
   aimShadow(target, sunDir) {
-    if (!this.sun.castShadow) return;
+    if (!this.sun.castShadow) {
+      /* A directional light's direction is position − target, and syncSun
+         writes only the position. On a tier with no shadow map this used to
+         return here with the target still parked wherever the last shadowed
+         frame left it — the rover — so the rover and every prop were lit from
+         up to 29° off the sun. Pin the target at the origin and the direction
+         is sunDir again, which is what LOW, the phone tier, actually runs. */
+      this.sun.target.position.set(0, 0, 0);
+      this.sun.target.updateMatrixWorld();
+      return;
+    }
     this.sun.target.position.copy(target);
     this.sun.position.copy(target).addScaledVector(sunDir, 90);
     this.sun.target.updateMatrixWorld();

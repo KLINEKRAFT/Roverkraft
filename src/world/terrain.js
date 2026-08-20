@@ -1,5 +1,5 @@
 /* ============================================================
-   ANAXAGORAS BASIN — terrain
+   PHILOLAUS BASIN — terrain
    ------------------------------------------------------------
    • Height is BAKED on the CPU into Float textures; the GPU only ever
      samples them.  Physics and pixels therefore agree exactly.

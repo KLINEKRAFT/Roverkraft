@@ -3,13 +3,15 @@
    ============================================================ */
 import { CODEX, MISSIONS } from '../game/lore.js';
 import { HOME } from '../world/props.js';
-import { STATION, MASSIF } from '../game/gameplay.js';
+import { STATION, PIT } from '../game/gameplay.js';
 import { DRIVE } from '../game/rover.js';
 import { PLAYABLE_R, MACRO_RES, MACRO_EXT } from '../world/terrain.js';
 import { clamp, sstep } from '../core/rng.js';
+import { UI, alpha, rgbOf, type } from './theme.js';
 
 const $ = (id) => document.getElementById(id);
 const MAP_EXT = 1020;                    // metres shown across the minimap base
+const MAP_RGB = rgbOf(UI.bone);          // the hillshade is lit bone, not white
 
 export class HUD {
   constructor(audio) {
@@ -21,12 +23,13 @@ export class HUD {
       bay: $('baygrid'), bayCount: $('bayCount'), mapScale: $('mapScale'),
       prompt: $('prompt'), logfeed: $('logfeed'), vig: $('vig'),
       discovery: $('discovery'), gprState: $('gprState'),
-      codexList: $('codexList'), codexRead: $('codexRead')
+      codexList: $('codexList'), codexRead: $('codexRead'),
+      tilt: $('gTilt'), speed: $('gSpeed'), odo: $('odo'), camMode: $('camMode'), mapName: $('mapName'),
+      tray: $('tray'), trayBody: $('trayBody'), trayGrip: $('trayGrip')
     };
     this.cv = {
       compass: $('compass').getContext('2d'),
       minimap: $('minimap').getContext('2d'),
-      speedo: $('speedo').getContext('2d'),
       wheel: $('wheelmon').getContext('2d'),
       gpr: $('gprscope').getContext('2d')
     };
@@ -38,9 +41,59 @@ export class HUD {
     this._t = 0;
     this._discT = 0;
     this._camLabel = '';
+    /* ---------------- what moves, and where it came from ----------------
+       A phone cannot carry mission control at any size that is still legible,
+       so instruments come OFF the driving HUD. They do not disappear: they are
+       re-parented into the status tray, where a thumb reaches them at a stop.
+
+       The home anchor is recorded here, before anything has moved. Restoring
+       walks the list in REVERSE so that each `next` sibling is already back in
+       the document by the time it is used — several of these are each other's
+       neighbours, and forward order throws NotFoundError on the first pair. */
+    this.movable = ['.z-compass', '.z-clock', '#gHeat', '#sysChips', '.bay', '.wheels', '.gpr']
+      .map(sel => document.querySelector(`#hud ${sel}`) || document.querySelector(sel))
+      .filter(Boolean)
+      .map(node => ({ node, parent: node.parentNode, next: node.nextSibling }));
+    this._layout = null;
+    this.trayOpen = false;
+    /* True when the reference instruments are actually on screen. Everything
+       gated by it is a canvas redraw per frame, and drawing a hidden A-scope
+       into a hidden canvas is the cheapest thing on this list to stop doing. */
+    this.refVisible = true;
+
     this.buildBay();
     this.buildCodexList();
+    this.setLayout(matchMedia('(max-width:700px), (max-height:520px)').matches ? 'phone' : 'wide');
+    this.el.tray.classList.add('hidden');    // shown with the HUD, at startGame
   }
+
+  /* ---------------- layout ---------------- */
+  setLayout(mode) {
+    if (mode === this._layout) return;
+    this._layout = mode;
+    if (mode === 'phone') {
+      for (const m of this.movable) this.el.trayBody.appendChild(m.node);
+    } else {
+      for (let i = this.movable.length - 1; i >= 0; i--) {
+        const m = this.movable[i];
+        m.parent.insertBefore(m.node, m.next);
+      }
+      this.setTray(false);
+    }
+    this.el.tray.classList.toggle('off', mode !== 'phone');
+    this.refVisible = mode !== 'phone';
+    this.bayDirty = true;
+  }
+
+  setTray(open) {
+    this.trayOpen = !!open && this._layout === 'phone';
+    this.el.tray.classList.toggle('closed', !this.trayOpen);
+    this.el.trayGrip.setAttribute('aria-expanded', this.trayOpen ? 'true' : 'false');
+    this.refVisible = this._layout !== 'phone' || this.trayOpen;
+    if (this.refVisible) this.bayDirty = true;
+    if (this.audio) this.audio.ui('tick');
+  }
+  toggleTray() { this.setTray(!this.trayOpen); }
 
   /* ---------------- minimap base: hillshade the real height field ---------------- */
   bakeMap(terrain) {
@@ -76,12 +129,12 @@ export class HUD {
       const r = Math.hypot(x, z);
       if (r > PLAYABLE_R) v *= 0.42;                  // outside the fence reads dead
       const o = (j * N + i) * 4;
-      img.data[o] = v * 232; img.data[o + 1] = v * 226; img.data[o + 2] = v * 210;
+      img.data[o] = v * MAP_RGB[0]; img.data[o + 1] = v * MAP_RGB[1]; img.data[o + 2] = v * MAP_RGB[2];
       img.data[o + 3] = 255;
     }
     g.putImageData(img, 0, 0);
     // fence ring
-    g.strokeStyle = 'rgba(255,180,84,.30)'; g.lineWidth = 1;
+    g.strokeStyle = alpha(UI.science, 0.30); g.lineWidth = 1;
     g.beginPath(); g.arc(N / 2, N / 2, PLAYABLE_R / MAP_EXT * N, 0, 6.2832); g.stroke();
     this.mapBase = c;
   }
@@ -143,7 +196,7 @@ export class HUD {
     const m = game.mission;
     if (!m) {
       this.el.tag.textContent = 'FREE SURVEY';
-      this.el.name.textContent = 'ANAXAGORAS';
+      this.el.name.textContent = 'PHILOLAUS';
       this.el.obj.innerHTML = `<div>${game.excavated} excavations · ${(game.rover.odo / 1000).toFixed(2)} km driven</div>`;
       this.missionDirty = false; return;
     }
@@ -214,7 +267,7 @@ export class HUD {
     const heading = (Math.atan2(rover.forward.x, -rover.forward.z) * 180 / Math.PI + 360) % 360;
     const span = 140;                                  // degrees across the strip
     const pxPerDeg = W / span;
-    g.font = '10px ui-monospace, monospace';
+    g.font = type(10);
     g.textAlign = 'center';
     const marks = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
     // Step over ABSOLUTE bearings, not offsets from the current heading —
@@ -226,24 +279,25 @@ export class HUD {
       const x = W / 2 + rel * pxPerDeg;
       const major = a % 45 === 0;
       const mid = a % 15 === 0;
-      g.strokeStyle = major ? 'rgba(216,210,198,.75)' : mid ? 'rgba(216,210,198,.38)' : 'rgba(216,210,198,.16)';
+      g.strokeStyle = major ? alpha(UI.bone, 0.75) : mid ? alpha(UI.bone, 0.38) : alpha(UI.bone, 0.16);
       g.lineWidth = 1;
       g.beginPath(); g.moveTo(x, H - 1); g.lineTo(x, H - (major ? 13 : mid ? 8 : 4)); g.stroke();
       if (major) {
         const lab = marks[a];
-        g.fillStyle = lab.length <= 2 ? '#d8d2c6' : 'rgba(216,210,198,.60)';
+        g.fillStyle = lab.length <= 2 ? UI.bone : alpha(UI.bone, 0.60);
         g.fillText(lab, x, H - 18);
       }
     }
     // objective bearing
+    /* Only bearings you have a live reason to steer by. Asking the mission
+       whether an objective is OUTSTANDING, rather than which number it is,
+       means a reordered campaign cannot point the needle at the wrong place. */
     const targets = [];
-    if (game.mission) {
-      if (!game.objDone.reach && game.missionIdx === 3) targets.push([STATION.x, STATION.z, '#ffb454', 'BEACON-9']);
-      if (!game.objDone.massif && game.missionIdx === 4) targets.push([MASSIF.x, MASSIF.z, '#ffb454', 'MASSIF']);
-    }
-    if (game.bay.length >= 6 || game.objDone.deep || game.power < 25) targets.push([HOME.x, HOME.z, '#6fe3f5', 'SLED']);
+    if (game.objActive('reach')) targets.push([STATION.x, STATION.z, UI.science, 'KEEL-4']);
+    if (game.objActive('enter')) targets.push([PIT.x, PIT.z, UI.science, 'PIT']);
+    if (game.bay.length >= 6 || game.objDone.deep || game.power < 25) targets.push([HOME.x, HOME.z, UI.data, 'SLED']);
     for (const a of game.anoms) if (a.found && !a.taken && game.distTo(a.x, a.z) < 190)
-      targets.push([a.x, a.z, a.special || a.type === 'tube' ? '#ffb454' : '#6fe3f5', null]);
+      targets.push([a.x, a.z, a.special || a.type === 'vein' ? UI.science : UI.data, null]);
     for (const [tx, tz, col, lab] of targets) {
       const b = (Math.atan2(tx - rover.pos.x, -(tz - rover.pos.z)) * 180 / Math.PI + 360) % 360;
       const rel = ((b - heading + 540) % 360) - 180;
@@ -252,20 +306,20 @@ export class HUD {
       g.fillStyle = col;
       g.beginPath(); g.moveTo(x, 4); g.lineTo(x - 4, -3); g.lineTo(x + 4, -3); g.closePath();
       g.beginPath(); g.moveTo(x, 12); g.lineTo(x - 5, 3); g.lineTo(x + 5, 3); g.closePath(); g.fill();
-      if (lab) { g.font = '8px ui-monospace, monospace'; g.fillText(lab, x, 22); g.font = '10px ui-monospace, monospace'; }
+      if (lab) { g.font = type(8); g.fillText(lab, x, 22); g.font = type(10); }
     }
     // sun bearing
     const sb = (Math.atan2(sky.sunDir.x, -sky.sunDir.z) * 180 / Math.PI + 360) % 360;
     const srel = ((sb - heading + 540) % 360) - 180;
     if (Math.abs(srel) <= span / 2) {
       const x = W / 2 + srel * pxPerDeg;
-      g.fillStyle = 'rgba(255,240,200,.85)';
+      g.fillStyle = alpha(UI.bone, 0.85);
       g.beginPath(); g.arc(x, 8, 3.4, 0, 6.2832); g.fill();
     }
     // centre index
-    g.strokeStyle = '#6fe3f5'; g.lineWidth = 1.4;
+    g.strokeStyle = UI.data; g.lineWidth = 1.4;
     g.beginPath(); g.moveTo(W / 2, H); g.lineTo(W / 2, H - 17); g.stroke();
-    g.fillStyle = '#6fe3f5'; g.font = '10px ui-monospace, monospace';
+    g.fillStyle = UI.data; g.font = type(10);
     g.fillText(String(Math.round(heading)).padStart(3, '0'), W / 2, 10);
   }
 
@@ -290,9 +344,9 @@ export class HUD {
     // relay coverage
     if (game.props.relays) for (const r of game.props.relays) {
       const [ux, uy] = w2s(r.position.x, r.position.z);
-      g.strokeStyle = 'rgba(42,210,255,.22)'; g.lineWidth = 1;
+      g.strokeStyle = alpha(UI.data, 0.22); g.lineWidth = 1;
       g.beginPath(); g.arc(ux, uy, 95 / span * S, 0, 6.2832); g.stroke();
-      g.fillStyle = '#2ad2ff'; g.fillRect(ux - 2.5, uy - 2.5, 5, 5);
+      g.fillStyle = UI.data; g.fillRect(ux - 2.5, uy - 2.5, 5, 5);
     }
     // POIs
     const poi = (x, z, col, label, shape) => {
@@ -309,99 +363,67 @@ export class HUD {
         g.beginPath(); g.arc(ux, uy, 3.2, 0, 6.2832); g.fill();
       }
       if (label) {
-        g.font = '8px ui-monospace, monospace'; g.textAlign = 'center';
+        g.font = type(8); g.textAlign = 'center';
         g.fillStyle = col; g.fillText(label, ux, uy - 9);
       }
     };
-    poi(HOME.x, HOME.z, '#6fe3f5', 'SLED', 'home');
-    if (game.missionIdx >= 3 || game.stationVisited) poi(STATION.x, STATION.z, '#ffb454', 'BEACON-9', 'x');
-    if (game.missionIdx >= 4) poi(MASSIF.x, MASSIF.z, '#ffb454', 'MASSIF', 'x');
+    poi(HOME.x, HOME.z, UI.data, 'SLED', 'home');
+    if (game.revealed('STATION')) poi(STATION.x, STATION.z, UI.science, 'KEEL-4', 'x');
+    if (game.revealed('PIT')) poi(PIT.x, PIT.z, UI.science, 'PIT', 'x');
     for (const a of game.anoms) if (a.found && !a.taken)
-      poi(a.x, a.z, a.special || a.type === 'tube' ? '#ffb454' : '#2ad2ff', null, 'dot');
+      poi(a.x, a.z, a.special || a.type === 'vein' ? UI.science : UI.data, null, 'dot');
 
     // rover
+    const dHome = Math.hypot(px - HOME.x, pz - HOME.z);
     const hd = Math.atan2(rover.forward.x, -rover.forward.z);
     g.save(); g.translate(S / 2, S / 2); g.rotate(hd);
-    g.fillStyle = '#ffffff';
+    g.fillStyle = UI.bone;
     g.beginPath(); g.moveTo(0, -7); g.lineTo(5, 6); g.lineTo(0, 3); g.lineTo(-5, 6); g.closePath(); g.fill();
     g.restore();
     // scan pulse
     if (game.scan.active) {
       const [ux, uy] = w2s(game.scan.x, game.scan.z);
-      g.strokeStyle = `rgba(42,210,255,${0.8 - game.scan.t / 2.1 * 0.7})`; g.lineWidth = 1.4;
+      g.strokeStyle = alpha(UI.data, 0.8 - game.scan.t / 2.1 * 0.7); g.lineWidth = 1.4;
       g.beginPath(); g.arc(ux, uy, game.scan.r / span * S, 0, 6.2832); g.stroke();
     }
     g.restore();
-    g.strokeStyle = 'rgba(216,210,198,.16)'; g.lineWidth = 1;
+    g.strokeStyle = alpha(UI.bone, 0.16); g.lineWidth = 1;
     g.beginPath(); g.moveTo(S / 2, 0); g.lineTo(S / 2, S); g.moveTo(0, S / 2); g.lineTo(S, S / 2); g.stroke();
-    this.el.mapScale.textContent = `${Math.round(span)} m`;
-  }
 
-  drawSpeedo(rover, game) {
-    const g = this.cv.speedo, S = 150, c = S / 2;
-    g.clearRect(0, 0, S, S);
-    const spd = Math.abs(rover.speed);
-    const max = 9;
-    const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
-    const R = 58;
-
-    g.lineCap = 'butt';
-    g.strokeStyle = 'rgba(216,210,198,.09)'; g.lineWidth = 6;
-    g.beginPath(); g.arc(c, c, R, a0, a1); g.stroke();
-
-    for (let i = 0; i <= 9; i++) {
-      const a = a0 + (i / 9) * (a1 - a0);
-      const maj = i % 3 === 0;
-      g.strokeStyle = maj ? 'rgba(216,210,198,.50)' : 'rgba(216,210,198,.20)';
-      g.lineWidth = 1;
-      g.beginPath();
-      g.moveTo(c + Math.cos(a) * (R - 9), c + Math.sin(a) * (R - 9));
-      g.lineTo(c + Math.cos(a) * (R - 4), c + Math.sin(a) * (R - 4));
-      g.stroke();
-    }
-
-    const t = clamp(spd / max, 0, 1);
-    g.strokeStyle = '#6fe3f5'; g.lineWidth = 6;
-    g.beginPath(); g.arc(c, c, R, a0, a0 + t * (a1 - a0)); g.stroke();
-
-    const slip = rover.wheels.reduce((s, w) => s + w.slipLong, 0) / 6;
-    if (slip > 0.02) {
-      g.strokeStyle = `rgba(255,180,84,${clamp(slip, 0, 1) * 0.85})`; g.lineWidth = 2;
-      g.beginPath(); g.arc(c, c, R + 6, a0, a0 + clamp(slip, 0, 1) * (a1 - a0)); g.stroke();
-    }
-
-    g.textAlign = 'center';
-    g.fillStyle = '#d8d2c6'; g.font = '300 30px ui-monospace, monospace';
-    g.fillText((spd * 3.6).toFixed(1), c, c + 6);
-    g.fillStyle = 'rgba(216,210,198,.40)'; g.font = '8px ui-monospace, monospace';
-    g.fillText('KM/H', c, c + 19);
-    g.fillStyle = rover.speed < -0.15 ? '#ffb454' : 'rgba(216,210,198,.55)';
-    g.font = '8.5px ui-monospace, monospace';
-    g.fillText(rover.airborne ? 'AIRBORNE' : rover.speed < -0.15 ? 'REVERSE' : 'DRIVE', c, c + 36);
-    g.fillStyle = 'rgba(216,210,198,.32)'; g.font = '8px ui-monospace, monospace';
-    g.fillText(this._camLabel, c, 22);
-    g.fillText(`${(rover.odo / 1000).toFixed(2)} KM`, c, S - 10);
-    void game;
+    /* The map header is two slots, and on a phone they carry the two questions
+       the compass strip and the clock used to answer: which way am I pointed,
+       and how far is the sled. The basin name and the scale bar are reference,
+       and reference lives in the tray. Written through a cache — textContent
+       on every frame is a layout pass nobody asked for. */
+    const phone = this._layout === 'phone';
+    const name = phone
+      ? `HDG ${String(Math.round(hd * 57.29578 + 360) % 360).padStart(3, '0')}°`
+      : 'PHILOLAUS BASIN';
+    const scale = phone
+      ? (dHome > 999 ? `SLED ${(dHome / 1000).toFixed(2)} km` : `SLED ${Math.round(dHome)} m`)
+      : `${Math.round(span)} m`;
+    if (name !== this._mapName) { this._mapName = name; this.el.mapName.textContent = name; }
+    if (scale !== this._mapScale) { this._mapScale = scale; this.el.mapScale.textContent = scale; }
   }
 
   drawWheels(rover) {
     const g = this.cv.wheel, W = 236, H = 130;
     g.clearRect(0, 0, W, H);
-    g.font = '8px ui-monospace, monospace'; g.textAlign = 'left';
+    g.font = type(8); g.textAlign = 'left';
     const cols = [42, 118, 194], rows = [36, 96];
     rover.wheels.forEach((w) => {
       const cx = cols[w.axle], cy = rows[w.side < 0 ? 0 : 1];
       const load = clamp(w.load / 700, 0, 1.4);
-      g.strokeStyle = w.contact ? 'rgba(216,210,198,.35)' : 'rgba(255,95,86,.55)';
+      g.strokeStyle = w.contact ? alpha(UI.bone, 0.35) : alpha(UI.emergency, 0.75);
       g.lineWidth = 1;
       g.strokeRect(cx - 26, cy - 15, 52, 30);
-      g.fillStyle = w.slipLong > 0.25 ? `rgba(255,180,84,${0.25 + w.slipLong * 0.6})`
-                                      : `rgba(111,227,245,${0.16 + load * 0.5})`;
+      g.fillStyle = w.slipLong > 0.25 ? alpha(UI.science, 0.25 + w.slipLong * 0.6)
+                                      : alpha(UI.data, 0.16 + load * 0.5);
       g.fillRect(cx - 25, cy + 14 - Math.max(2, load * 28), 50, Math.max(2, load * 28));
       // sinkage bar
-      g.fillStyle = 'rgba(180,120,60,.75)';
+      g.fillStyle = alpha(UI.science, 0.55);
       g.fillRect(cx - 25, cy + 14, 50 * clamp(w.sink / 0.11, 0, 1), 2);
-      g.fillStyle = 'rgba(216,210,198,.55)';
+      g.fillStyle = alpha(UI.bone, 0.55);
       g.fillText(['F', 'M', 'A'][w.axle] + (w.side < 0 ? 'L' : 'R'), cx - 24, cy - 6);
     });
   }
@@ -411,12 +433,12 @@ export class HUD {
     g.clearRect(0, 0, W, H);
     
     // depth grid
-    g.strokeStyle = 'rgba(111,227,245,.10)'; g.lineWidth = 1;
+    g.strokeStyle = alpha(UI.data, 0.12); g.lineWidth = 1;
     for (let i = 1; i < 6; i++) {
       const y = i / 6 * H;
       g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
     }
-    g.fillStyle = 'rgba(111,227,245,.35)'; g.font = '7.5px ui-monospace, monospace'; g.textAlign = 'left';
+    g.fillStyle = alpha(UI.data, 0.42); g.font = type(7.5); g.textAlign = 'left';
     for (let i = 1; i < 6; i++) g.fillText(`${i * 2} m`, 3, i / 6 * H - 2);
 
     // A-scope trace: noise, plus a real reflector where an anomaly sits below
@@ -428,12 +450,12 @@ export class HUD {
       let v = (Math.random() - 0.5) * (scanning ? 0.30 : 0.10);
       for (const a of near) {
         const d = game.distTo(a.x, a.z);
-        const amp = (1 - d / 30) * (a.special ? 1.5 : a.type === 'tube' ? 1.1 : 0.7);
+        const amp = (1 - d / 30) * (a.special ? 1.5 : a.type === 'vein' ? 1.1 : 0.7);
         v += Math.exp(-Math.pow((depth - a.depth) / 0.34, 2)) * amp * Math.sin(this._t * 22 + i * 0.4);
       }
       this.gprTrace[i] = this.gprTrace[i] * 0.55 + v * 0.45;
     }
-    g.strokeStyle = near.length ? '#6fe3f5' : 'rgba(111,227,245,.42)';
+    g.strokeStyle = near.length ? UI.data : alpha(UI.data, 0.42);
     g.lineWidth = 1.2;
     g.beginPath();
     for (let i = 0; i < N; i++) {
@@ -454,7 +476,7 @@ export class HUD {
     this._camLabel = rig.modeName;
 
     if (this.missionDirty) this.refreshMission(game);
-    if (this.bayDirty) this.refreshBay(game);
+    if (this.bayDirty && this.refVisible) this.refreshBay(game);
     if (this.codexDirty) this.refreshCodex(game);
 
     // gauges
@@ -464,15 +486,69 @@ export class HUD {
       el.classList.toggle('warn', frac < warn && frac >= crit);
       el.classList.toggle('crit', frac < crit);
     };
+    /* Speed is a value, so it is type and a bar like every other value. It
+       stays on the driving HUD despite being marginal to any decision, because
+       it costs one row here and reading it is free. */
+    const kmh = Math.abs(rover.speed) * 3.6;
+    setG(this.el.speed, Math.abs(rover.speed) / (DRIVE.maxSpeed || 8.4),
+      rover.airborne ? 'AIRBORNE' : `${kmh.toFixed(1)} km/h${rover.speed < -0.15 ? ' R' : ''}`, -1, -1);
     setG(this.el.batt, game.power / 100, `${Math.round(game.power)}%`, 0.35, 0.15);
     setG(this.el.hull, game.hull / 100, `${Math.round(game.hull)}%`, 0.45, 0.20);
-    const ht = clamp((game.heat + 60) / 120, 0, 1);
-    this.el.heat.querySelector('i').style.transform = `scaleX(${ht})`;
-    this.el.heat.querySelector('b').textContent = `${game.heat > 0 ? '+' : ''}${Math.round(game.heat)}°`;
-    this.el.heat.classList.toggle('warn', game.heat < -35 || game.heat > 55);
-    this.el.heat.classList.toggle('crit', game.heat < -55 || game.heat > 75);
+    /* Attitude, not slope-under-the-wheels: what decides whether you are about
+       to be on your roof is how far the CHASSIS is off level, and at one sixth
+       of a gravity that arrives well before the terrain looks alarming. The
+       bar fills toward the rollover angle rather than toward 90°. */
+    const tilt = Math.acos(clamp(rover.up.y, -1, 1)) * 57.29578;
+    const tf = clamp(tilt / 34, 0, 1);
+    this.el.tilt.querySelector('i').style.transform = `scaleX(${tf})`;
+    this.el.tilt.querySelector('b').textContent = `${tilt.toFixed(0)}°`;
+    this.el.tilt.classList.toggle('warn', tilt > 18 && tilt <= 27);
+    this.el.tilt.classList.toggle('crit', tilt > 27);
+
+    if (this.refVisible) {
+      const ht = clamp((game.heat + 60) / 120, 0, 1);
+      this.el.heat.querySelector('i').style.transform = `scaleX(${ht})`;
+      this.el.heat.querySelector('b').textContent = `${game.heat > 0 ? '+' : ''}${Math.round(game.heat)}°`;
+      this.el.heat.classList.toggle('warn', game.heat < -35 || game.heat > 55);
+      this.el.heat.classList.toggle('crit', game.heat < -55 || game.heat > 75);
+    }
 
     // system chips
+    if (this.refVisible) this._chipsAndClock(game, rover, sky);
+
+    // instruments
+    this.drawMinimap(rover, game);
+    if (this.refVisible) {
+      this.drawCompass(rover, game, sky);
+      this.drawWheels(rover);
+      this.drawGPR(game);
+    }
+
+    // discovery banner
+    if (this._discT > 0) {
+      this._discT -= dt;
+      if (this._discT <= 0) this.el.discovery.classList.add('hidden');
+    }
+    // log fade
+    const now = performance.now();
+    for (const l of this.logs) {
+      if (!l.faded && now - l.t > 9000) { l.faded = true; l.el.classList.add('fade'); }
+      if (l.faded && now - l.t > 10200 && l.el.parentNode) l.el.remove();
+    }
+    this.logs = this.logs.filter(l => l.el.parentNode);
+
+    // interaction ring
+    if (this.interactProgress > 0.001) {
+      const p = this.interactProgress * 100;
+      this.el.prompt.style.background =
+        `linear-gradient(90deg, ${alpha(UI.bone, 0.24)} ${p}%, ${alpha(UI.void, 0.78)} ${p}%)`;
+    } else this.el.prompt.style.background = '';
+    void sstep; void MISSIONS;
+  }
+
+  /** Reference readouts: only worth writing while they are on screen. On a
+      phone they live in the tray and are hidden for most of a session. */
+  _chipsAndClock(game, rover, sky) {
     const chips = [
       [`UPLINK ${DRIVE.commsDelay > 0 ? DRIVE.commsDelay.toFixed(1) + 's' : 'LOCAL'}`, DRIVE.commsDelay > 0],
       ['ARM', rover.armOut],
@@ -497,35 +573,20 @@ export class HUD {
     this.el.sunPhase.textContent = `${alt.toFixed(1)}° / ${Math.round(az)}°`;
     const dh = game.distTo(HOME.x, HOME.z);
     this.el.rangeHome.textContent = dh > 999 ? `${(dh / 1000).toFixed(2)} km` : `${Math.round(dh)} m`;
-
-    // instruments
-    this.drawCompass(rover, game, sky);
-    this.drawMinimap(rover, game);
-    this.drawSpeedo(rover, game);
-    this.drawWheels(rover);
-    this.drawGPR(game);
-
-    // discovery banner
-    if (this._discT > 0) {
-      this._discT -= dt;
-      if (this._discT <= 0) this.el.discovery.classList.add('hidden');
-    }
-    // log fade
-    const now = performance.now();
-    for (const l of this.logs) {
-      if (!l.faded && now - l.t > 9000) { l.faded = true; l.el.classList.add('fade'); }
-      if (l.faded && now - l.t > 10200 && l.el.parentNode) l.el.remove();
-    }
-    this.logs = this.logs.filter(l => l.el.parentNode);
-
-    // interaction ring
-    if (this.interactProgress > 0.001) {
-      this.el.prompt.style.background =
-        `linear-gradient(90deg, rgba(111,227,245,.30) ${this.interactProgress * 100}%, rgba(4,5,10,.7) ${this.interactProgress * 100}%)`;
-    } else this.el.prompt.style.background = '';
-    void sstep; void MISSIONS;
+    // both of these used to be printed inside the speed dial
+    this.el.odo.textContent = `${(rover.odo / 1000).toFixed(2)} km`;
+    this.el.camMode.textContent = this._camLabel;
   }
 
-  show() { this.el.hud.classList.remove('hidden'); }
-  hideHUD() { this.el.hud.classList.add('hidden'); }
+  /* The tray is part of the HUD, so it comes and goes with it — a status
+     tray over the main menu would be a panel with nothing to report. */
+  show() {
+    this.el.hud.classList.remove('hidden');
+    this.el.tray.classList.remove('hidden');
+  }
+  hideHUD() {
+    this.el.hud.classList.add('hidden');
+    this.el.tray.classList.add('hidden');
+    this.setTray(false);
+  }
 }
