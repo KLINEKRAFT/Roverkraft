@@ -1,0 +1,14 @@
+{
+  "name": "roverkraft",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ROVERKRAFT — The Philolaus Descent. A mobile-first lunar rover survey sim. Fork of winchxyz/moon-rover (REGOLITH).",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js 5173"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

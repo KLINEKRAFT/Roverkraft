@@ -1,0 +1,797 @@
+/* ============================================================
+   ROVERKRAFT — instrument UI
+   ------------------------------------------------------------
+   Dieter Rams, in the register Braun actually used for instruments: a black
+   body, neutral grey controls, and colour reserved entirely for function.
+   Braun moved to a black base when it moved into hi-fi — the Studio 1000, the
+   ET66 calculator — so black is not a departure from the language, it is the
+   half of it that fits something you read in the dark.
+
+   THE COLOUR RULE, which is the whole system:
+
+     drive      (throttle, steer, brake)      no colour at all. The sticks are
+                                              the body of the instrument.
+     science    (radar, arm, drill)           --science. The game's verb set.
+     systems    (relay, array, lamps)         neutral grey. Found by position.
+     emergency  (right the chassis, critical) --emergency. NOTHING else may be
+                                              red, ever.
+     data       (speed, power, integrity,     --data, as TYPE. No bezels, no
+                 map traces, radar returns)   needles, no fake gauge chrome.
+
+   Controls are coded by function class. Values are coded by state, and run
+   bone → --science → --emergency as they get worse. The two never meet in one
+   element, so a yellow thing is either a science control or a value that wants
+   looking at, and which one is never ambiguous from where it sits.
+
+   The discipline that makes this read as Rams rather than as "minimal" is that
+   the signal colours are SCARCE. If three things are yellow, none of them are.
+
+   --data is KLINEKRAFT steel-blue, deliberately demoted: it is the colour of
+   numbers and traces and never the colour of a control. Braun's signal
+   language is warm plus green, and a cool accent does not belong in it.
+
+   TYPE: one grotesque, two roles. Labels in the grotesque, values in the same
+   grotesque with tabular figures so digits do not jitter as they change. A
+   monospace for atmosphere would be exactly the decoration Rams removes, and
+   a webfont would break the project's zero-fetched-assets premise.
+   ============================================================ */
+:root{
+  --void:#0A0A0A;            /* black body */
+  --bone:#F0EDE5;            /* Braun White — primary type */
+  --grey:#8A8A87;            /* Braun Grey — neutral control, secondary type */
+  --grey-dim:#5A5A58;
+  --science:#E8A33D;         /* ET66 signal yellow — the verb set */
+  --emergency:#C02820;       /* Braun signal red — and nothing else */
+  --confirm:#6F9E52;         /* ET66 memory green — done, secured, complete */
+  --data:#6EA4C4;            /* steel-blue — values and traces only */
+  --data-dim:#3C5C70;
+  --hair:rgba(240,237,229,.11);
+  --hair2:rgba(240,237,229,.22);
+  --panel:rgba(14,14,14,.86);
+  --grot:"Helvetica Neue",Helvetica,Inter,"Segoe UI",Roboto,Arial,system-ui,sans-serif;
+
+  /* HUD SIZE, from the settings panel. Lives on :root so the instrument
+     panels and the touch furniture scale together. */
+  --hud-k:1;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--void);}
+body{
+  font-family:var(--grot);
+  color:var(--bone);
+  /* Tabular figures everywhere by default: an instrument whose digits change
+     width as they change value jitters, and every number on this screen
+     changes. Prose opts back out below — running text wants proportional. */
+  font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  user-select:none;
+  touch-action:none;
+}
+.brief,.codex-read,.card-text,.keyrow span,.set-row small{font-variant-numeric:normal}
+canvas#stage{position:fixed;inset:0;width:100%;height:100%;display:block;background:#000;}
+
+.hidden{display:none !important;}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;}
+
+/* ---------------- overlays ---------------- */
+/* reduced motion: nothing here is load-bearing, so just stop it moving */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+
+.overlay{
+  position:fixed;inset:0;z-index:40;
+  display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(120% 100% at 50% 20%, rgba(22,22,22,.88), rgba(6,6,6,.97));
+  backdrop-filter:blur(7px);
+  animation:fadein .4s ease;
+}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
+/* The scanline overlay that used to sit here is gone. It was a CRT filter over
+   a scene with no CRT in it — decoration pretending to be a property of the
+   display. Honest design does not draw a texture that is not there. */
+
+/* ---------------- boot ---------------- */
+.boot .boot-inner{text-align:center;max-width:560px;padding:32px;}
+/* A mark that rotates forever is a mark asking to be looked at. It is a
+   wordmark, not a loading spinner — the load bar below is the loading
+   spinner, and it says something the rotation did not. */
+.crest{color:var(--bone);opacity:.72;margin-bottom:20px;display:inline-block}
+.title{
+  font-size:clamp(38px,7vw,72px);letter-spacing:.42em;font-weight:400;
+  margin-right:-.42em;
+}
+.title.big{font-size:clamp(44px,6vw,78px)}
+.subtitle{margin-top:14px;color:var(--grey);letter-spacing:.30em;font-size:12px;text-transform:uppercase}
+.loadbar{margin:34px auto 10px;width:min(420px,70vw);height:2px;background:rgba(240,237,229,.12);overflow:hidden}
+.loadbar i{display:block;height:100%;width:0%;background:var(--bone);transition:width .25s ease}
+.loadtext{font-size:11px;letter-spacing:.18em;color:var(--grey);text-transform:uppercase;min-height:1.2em}
+/* The maker's mark, set the way Braun set one: small, wide, and at the foot
+   of the page rather than over the product. */
+.wordmark{margin-top:40px;font-size:11px;letter-spacing:.52em;margin-right:-.52em;color:var(--bone)}
+.legal{margin-top:9px;font-size:9.5px;letter-spacing:.24em;color:rgba(240,237,229,.34)}
+
+/* ---------------- menu ---------------- */
+.menu-grid{
+  width:min(1120px,92vw);display:grid;grid-template-columns:1.35fr .85fr;gap:56px;align-items:center;
+  padding:28px;
+}
+.brief{margin:26px 0 30px;font-size:13px;line-height:1.85;color:#A6A29A;max-width:52ch;}
+.brief b{color:var(--bone);font-weight:400;border-bottom:1px solid var(--hair2)}
+.brief em{color:var(--bone);font-style:normal;border-bottom:1px solid var(--hair2)}
+.menu-actions{display:flex;flex-direction:column;gap:9px;max-width:330px}
+.hint{margin-top:26px;font-size:10px;letter-spacing:.2em;color:rgba(240,237,229,.32)}
+
+.btn{
+  position:relative;padding:13px 20px;letter-spacing:.22em;font-size:12px;
+  border:1px solid var(--hair2);background:rgba(240,237,229,.03);
+  text-align:left;transition:background .16s ease,border-color .16s ease,color .16s ease;overflow:hidden;
+}
+.btn:hover{background:rgba(240,237,229,.07);border-color:var(--hair2);color:var(--bone)}
+/* The primary action is the only filled control in the interface. It is
+   findable by weight, not by hue — none of the three signal colours means
+   "the main button", and spending one on a menu would spend it everywhere. */
+.btn.primary{background:var(--bone);color:var(--void);border-color:var(--bone)}
+.btn.primary:hover{background:#fff;color:var(--void)}
+.btn.ghost{border-color:var(--hair);color:var(--grey)}
+.btn.ghost:hover{color:var(--bone)}
+.btn.danger:hover{border-color:rgba(192,40,32,.5);background:rgba(192,40,32,.10);color:#E39A93}
+
+.dossier{border:1px solid var(--hair);padding:22px;background:rgba(240,237,229,.02)}
+.dossier-row{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px dashed var(--hair);font-size:11px;letter-spacing:.14em}
+.dossier-row:last-child{border-bottom:none}
+.dossier-row span{color:rgba(240,237,229,.42)}
+.dossier-row b{font-weight:400}
+/* Red, and static. A blinking label on a menu is an alarm with nothing to
+   sound about; the one animated alarm in this interface is the critical
+   gauge, where something is actually happening. */
+.dossier-row.alert b{color:var(--emergency)}
+
+/* ---------------- full-screen sheets (codex / pause / help) ----------------
+   Deliberately NOT called .panel: that class is the HUD instrument panel, and
+   it sets position:relative. An overlay carrying both collapsed to a 2 px
+   strip, because .panel is declared later and killed the .overlay inset:0. */
+.panel-head{
+  position:absolute;top:0;left:0;right:0;height:62px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 28px;border-bottom:1px solid var(--hair);background:rgba(8,8,8,.7)
+}
+.panel-head h2{font-size:13px;letter-spacing:.34em;font-weight:400}
+.x{font-size:10px;letter-spacing:.2em;border:1px solid var(--hair2);padding:6px 11px;color:var(--grey)}
+.x:hover{color:var(--bone);border-color:var(--bone)}
+.panel-foot{position:absolute;bottom:0;left:0;right:0;padding:16px 28px;display:flex;gap:10px;border-top:1px solid var(--hair);background:rgba(8,8,8,.7)}
+.panel-foot .btn{flex:0 0 auto;padding:11px 18px}
+.overlay.sheet{align-items:stretch;justify-content:stretch;padding:0}
+.overlay.sheet > *{width:100%}
+
+.settings{position:absolute;inset:62px 0 82px 0;overflow-y:auto;padding:28px;display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;align-content:start}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 15px;border:1px solid var(--hair);background:rgba(240,237,229,.02)}
+.set-row label{font-size:10.5px;letter-spacing:.16em;color:#B6B2AA}
+.set-row small{display:block;color:rgba(240,237,229,.34);letter-spacing:.04em;margin-top:4px;font-size:9.5px}
+.seg{display:flex;border:1px solid var(--hair2);flex:0 0 auto}
+.seg button{padding:7px 11px;font-size:9.5px;letter-spacing:.12em;color:var(--grey)}
+.seg button.on{background:rgba(240,237,229,.13);color:var(--bone)}
+input[type=range]{-webkit-appearance:none;width:120px;height:2px;background:var(--hair2);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--bone);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border:none;border-radius:50%;background:var(--bone);cursor:pointer}
+
+.keys{position:absolute;inset:62px 0 0 0;overflow-y:auto;padding:32px 28px;display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:24px 34px;align-content:start}
+.keygroup h4{font-size:9.5px;letter-spacing:.3em;color:var(--grey);margin-bottom:12px;font-weight:400}
+.keyrow{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px dashed var(--hair);font-size:11px}
+.keyrow span{color:rgba(240,237,229,.55)}
+kbd{display:inline-block;min-width:20px;text-align:center;padding:2px 6px;border:1px solid var(--hair2);border-bottom-width:2px;font-size:10px;letter-spacing:.04em;background:rgba(240,237,229,.05)}
+
+.codex-body{position:absolute;inset:62px 0 0 0;display:grid;grid-template-columns:320px 1fr}
+.codex-list{list-style:none;overflow-y:auto;border-right:1px solid var(--hair);padding:12px 0}
+.codex-list li{padding:12px 24px;font-size:11px;letter-spacing:.08em;cursor:pointer;border-left:2px solid transparent;color:var(--grey)}
+.codex-list li:hover{background:rgba(240,237,229,.04);color:var(--bone)}
+.codex-list li.on{border-left-color:var(--bone);background:rgba(240,237,229,.06);color:var(--bone)}
+.codex-list li.locked{opacity:.32;cursor:default;font-style:italic}
+.codex-list li small{display:block;font-size:8.5px;letter-spacing:.22em;color:var(--grey-dim);margin-bottom:3px}
+.codex-read{overflow-y:auto;padding:42px 54px;max-width:78ch;line-height:1.95;font-size:13px;color:#A6A29A}
+.codex-read h3{color:var(--bone);font-size:18px;letter-spacing:.16em;font-weight:400;margin-bottom:6px}
+.codex-read .meta{font-size:9.5px;letter-spacing:.24em;color:var(--grey);margin-bottom:26px}
+.codex-read p{margin-bottom:16px}
+.codex-read p.sig{color:var(--grey);border-left:2px solid var(--hair2);padding-left:16px;font-style:italic}
+
+/* ---------------- mission card ---------------- */
+.card{background:rgba(6,6,6,.88)}
+.card-inner{width:min(660px,88vw);border:1px solid var(--hair2);background:var(--panel);padding:44px 46px;position:relative}
+/* The corner brackets are gone. They framed nothing, aligned to nothing and
+   meant nothing — a sci-fi HUD costume over a box that was already a box. */
+.card-kicker{font-size:9.5px;letter-spacing:.36em;color:var(--grey)}
+.card-title{font-size:28px;letter-spacing:.2em;font-weight:400;margin:12px 0 20px}
+.card-text{font-size:13px;line-height:1.9;color:#A6A29A;margin-bottom:24px}
+.card-obj{border-top:1px solid var(--hair);padding-top:16px;margin-bottom:28px}
+.card-obj div{font-size:11px;letter-spacing:.08em;padding:5px 0;color:#B6B2AA}
+.card-obj div::before{content:"▸ ";color:var(--grey)}
+
+/* ============================================================
+   HUD — a three-row grid. Every panel owns a cell, so nothing can
+   drift underneath anything else at any window size.
+
+   Every dimension below is a multiple of --s, the HUD unit, rather
+   than a hand-picked pixel value. Breakpoints set --u for the device
+   class and the HUD SIZE setting multiplies it through --hud-k, so
+   the whole instrument set scales from one knob and keeps its
+   proportions. Nothing here is sized in vw/vh: a HUD that scales
+   with the window gets tiny on a laptop and huge on a TV, when what
+   actually matters is how far the screen is from your face.
+   ============================================================ */
+.hud{
+  --u:1px;                                  /* device-class default */
+  --s:calc(var(--u) * var(--hud-k));        /* the HUD unit */
+
+  position:fixed;inset:0;z-index:20;pointer-events:none;
+  display:grid;
+  /* minmax(0,1fr) on the middle column: a 1fr track's automatic minimum is
+     min-content, and the 660 px compass canvas would otherwise pin the grid
+     wider than the window and shove the right-hand rail off-screen. */
+  grid-template-columns:
+    minmax(calc(240 * var(--s)), calc(326 * var(--s)))
+    minmax(0, 1fr)
+    minmax(calc(266 * var(--s)), calc(318 * var(--s)));
+  grid-template-rows:auto minmax(0,1fr) auto;
+  grid-template-areas:
+    "mission compass clock"
+    "log     .       rail"
+    "bottom  bottom  bottom";
+  padding:calc(16 * var(--s)) calc(20 * var(--s));
+  gap:calc(12 * var(--s)) calc(18 * var(--s));
+  font-size:calc(11 * var(--s));
+  letter-spacing:.08em;
+  color:var(--bone);
+  transition:opacity .25s ease;
+}
+.hud > div{min-width:0}
+.z-mission{grid-area:mission;align-self:start}
+.z-compass{grid-area:compass;align-self:start;justify-self:center;overflow:hidden}
+.z-clock  {grid-area:clock;align-self:start;justify-self:end}
+.z-log    {grid-area:log;align-self:end;min-height:0}
+.z-rail   {grid-area:rail;align-self:start;justify-self:end;display:flex;flex-direction:column;gap:calc(10 * var(--s))}
+.z-bottom {grid-area:bottom;display:flex;gap:calc(12 * var(--s));align-items:flex-end;flex-wrap:nowrap;overflow:hidden}
+
+/* ---------------- shared panel ---------------- */
+.panel{
+  border:1px solid var(--hair);
+  background:linear-gradient(180deg,rgba(20,20,20,.76),rgba(14,14,14,.62));
+  backdrop-filter:blur(4px);
+  padding:calc(9 * var(--s)) calc(12 * var(--s)) calc(10 * var(--s));
+  position:relative;
+}
+/* Type carries a floor that the scale cannot push through. Shrinking the HUD
+   should take space off the instruments — canvases, bars, padding — not make
+   the labels unreadable, and a panel that sizes to its content just gets a
+   little wider rather than clipping. */
+.panel > header{
+  display:flex;justify-content:space-between;align-items:baseline;gap:calc(12 * var(--s));
+  font-size:max(8px, calc(8.5 * var(--s)));letter-spacing:.26em;color:rgba(240,237,229,.40);
+  padding-bottom:calc(7 * var(--s));margin-bottom:calc(8 * var(--s));border-bottom:1px solid var(--hair);
+  white-space:nowrap;
+}
+.panel > header b{font-weight:400;color:var(--data);letter-spacing:.12em;font-variant-numeric:tabular-nums}
+
+/* ---------------- mission ---------------- */
+/* The mission panel is found by position — top left, always — not by a
+   coloured edge. The objective list underneath it is the only thing on the
+   HUD that is neither a control nor a value, so it carries no signal colour
+   at all; a finished objective goes green because green means done. */
+.mission{border-left:1px solid var(--hair2)}
+.mission > header{border-bottom:none;padding-bottom:0;margin-bottom:calc(3 * var(--s));color:var(--grey);letter-spacing:.30em}
+.mission h3{font-size:max(11px, calc(15 * var(--s)));letter-spacing:.20em;font-weight:400;margin:calc(1 * var(--s)) 0 calc(9 * var(--s));color:var(--bone)}
+.mission-obj div{
+  display:grid;grid-template-columns:calc(11 * var(--s)) 1fr;gap:calc(6 * var(--s));align-items:baseline;
+  font-size:max(9.5px, calc(10.5 * var(--s)));letter-spacing:.03em;padding:calc(2.5 * var(--s)) 0;color:rgba(240,237,229,.66);
+}
+.mission-obj .done{color:rgba(111,158,82,.72);text-decoration:line-through}
+.mission-obj i{font-style:normal;color:var(--grey);opacity:.9}
+.mission-obj .done i{color:var(--confirm);opacity:.85}
+.mission-obj small{display:block;color:rgba(240,237,229,.30);letter-spacing:.01em;font-size:max(8px, calc(9.5 * var(--s)));text-decoration:none}
+
+/* ---------------- clock ---------------- */
+.clock{min-width:calc(206 * var(--s))}
+.clock .row{display:flex;justify-content:space-between;gap:calc(16 * var(--s));padding:calc(2.5 * var(--s)) 0;font-size:max(9px, calc(10 * var(--s)))}
+.clock .row span{color:rgba(240,237,229,.36);letter-spacing:.18em}
+.clock .row b{font-weight:400;color:var(--bone);font-variant-numeric:tabular-nums}
+
+/* ---------------- compass ---------------- */
+.z-compass canvas{display:block;opacity:.95;width:calc(660 * var(--s));max-width:100%;height:auto}
+
+/* ---------------- right rail ---------------- */
+.map canvas{display:block;width:calc(258 * var(--s));height:calc(258 * var(--s))}
+.bay .baygrid{display:grid;grid-template-columns:repeat(6,1fr);gap:calc(5 * var(--s))}
+.slot{aspect-ratio:1;border:1px solid var(--hair2);position:relative;background:rgba(240,237,229,.02)}
+.slot.full{border-color:var(--data-dim);background:rgba(110,164,196,.10)}
+.slot.full::after{content:"";position:absolute;inset:28%;background:var(--data);opacity:.7;
+  clip-path:polygon(50% 0,100% 25%,100% 75%,50% 100%,0 75%,0 25%)}
+.slot.rare.full{border-color:rgba(232,163,61,.55);background:rgba(232,163,61,.11)}
+.slot.rare.full::after{background:var(--science)}
+
+/* ---------------- systems ---------------- */
+.sys{width:calc(214 * var(--s));min-height:calc(168 * var(--s))}
+.gauge{margin-bottom:calc(9 * var(--s));overflow:hidden}
+.gauge label{font-size:max(8px, calc(8.5 * var(--s)));letter-spacing:.20em;color:rgba(240,237,229,.42)}
+.gauge b{float:right;font-size:max(9.5px, calc(10 * var(--s)));font-weight:400;color:var(--bone);font-variant-numeric:tabular-nums}
+.gauge .bar{clear:both;height:calc(3 * var(--s));margin-top:calc(5 * var(--s));background:rgba(240,237,229,.10);position:relative;overflow:hidden}
+.gauge .bar i{position:absolute;inset:0;transform-origin:left;background:var(--data);
+  transition:transform .22s ease,background .3s}
+.gauge.warn .bar i{background:var(--science)}
+.gauge.crit .bar i{background:var(--emergency);animation:pulse .9s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+.chips{display:flex;flex-wrap:wrap;gap:calc(4 * var(--s));margin-top:1px}
+.chip{font-size:max(8px, calc(8 * var(--s)));letter-spacing:.14em;padding:calc(2.5 * var(--s)) calc(6 * var(--s));border:1px solid var(--hair2);
+  color:rgba(240,237,229,.42);white-space:nowrap}
+.chip.on{border-color:var(--data-dim);color:var(--data);background:rgba(110,164,196,.08)}
+
+/* ---------------- instrument cluster ---------------- */
+.inst{height:calc(168 * var(--s));display:flex;flex-direction:column;justify-content:flex-end}
+.inst canvas{display:block}
+.wheels canvas{width:calc(236 * var(--s));height:calc(112 * var(--s))}
+.gpr{background:linear-gradient(180deg,rgba(16,16,16,.82),rgba(10,10,10,.66))}
+.gpr canvas{width:calc(290 * var(--s));height:calc(112 * var(--s))}
+
+/* ---------------- log feed ---------------- */
+.logfeed{display:flex;flex-direction:column-reverse;gap:calc(4 * var(--s));max-height:calc(168 * var(--s));overflow:hidden}
+.logline{
+  font-size:max(9.5px, calc(10.5 * var(--s)));letter-spacing:.03em;color:rgba(240,237,229,.80);
+  padding:calc(4 * var(--s)) calc(9 * var(--s));border-left:2px solid var(--data-dim);
+  background:linear-gradient(90deg,rgba(12,12,12,.74),rgba(12,12,12,0));
+  animation:slidein .26s ease;
+}
+.logline.warn{border-left-color:var(--science);color:#E4C48C}
+.logline.bad{border-left-color:var(--emergency);color:#D89A93}
+.logline.good{border-left-color:var(--confirm);color:#AFC79B}
+.logline.fade{opacity:0;transition:opacity .8s ease}
+@keyframes slidein{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:none}}
+
+/* ---------------- centre overlays ---------------- */
+.hud > .reticle,.hud > .prompt,.hud > .vig,.hud > .discovery{position:absolute}
+.reticle{left:50%;top:50%;width:3px;height:3px;margin:-1.5px;border-radius:50%;
+  background:rgba(240,237,229,.45);box-shadow:0 0 5px rgba(0,0,0,.9)}
+.prompt{left:50%;top:calc(50% + 44px);transform:translateX(-50%);
+  padding:calc(7 * var(--s)) calc(15 * var(--s));border:1px solid var(--hair2);background:rgba(12,12,12,.80);
+  font-size:max(10px, calc(10.5 * var(--s)));letter-spacing:.12em;white-space:nowrap}
+.prompt kbd{margin:0 1px}
+
+.vig{inset:0;pointer-events:none;box-shadow:inset 0 0 220px rgba(0,0,0,0);transition:box-shadow .35s ease}
+.vig.hit{box-shadow:inset 0 0 220px rgba(255,60,50,.5)}
+
+.discovery{left:50%;top:30%;transform:translateX(-50%);text-align:center;
+  animation:disc .5s cubic-bezier(.2,.9,.2,1)}
+@keyframes disc{from{opacity:0;transform:translateX(-50%) scale(.94)}to{opacity:1;transform:translateX(-50%) scale(1)}}
+.d-kicker{font-size:calc(9 * var(--s));letter-spacing:.40em;color:var(--data)}
+.d-name{font-size:calc(23 * var(--s));letter-spacing:.24em;margin:calc(9 * var(--s)) 0 calc(5 * var(--s))}
+.d-sub{font-size:calc(10 * var(--s));letter-spacing:.14em;color:rgba(240,237,229,.52);max-width:46ch;margin:0 auto;line-height:1.6}
+
+/* ============================================================
+   RESPONSIVE
+
+   Two different things happen as the screen gets smaller. Down to
+   tablet size the HUD just scales: --u shrinks and the reference
+   instruments stay. Below that, scaling alone stops working — a
+   390 px screen cannot carry mission control at any size that is
+   still legible, and shrinking further only gives you six panels of
+   6 px type. So phones drop instruments instead, and the ones that
+   remain get *bigger* than the tablet's.
+   ============================================================ */
+@media (max-width:1500px){
+  .hud .wheels{display:none}
+}
+@media (max-width:1120px){
+  .hud .gpr{display:none}
+}
+@media (max-width:1180px){
+  .menu-grid{grid-template-columns:1fr;gap:30px}
+  .menu-right{display:none}
+  .hud{--u:.94px}
+  .codex-body{grid-template-columns:250px 1fr}
+  .codex-read{padding:30px 32px}
+}
+
+/* ---- tablets ----
+   The compass strip goes (its 660 px ribbon has nowhere to live once the
+   side rails meet in the middle) and the mission panel is pinned to its
+   content width — left to stretch across a 1fr track it ran to 70 % of an
+   iPad's width for the sake of one line of text. */
+@media (max-width:900px){
+  .hud{
+    --u:.90px;
+    grid-template-columns:minmax(0,1fr) minmax(calc(200 * var(--s)),calc(238 * var(--s)));
+    grid-template-rows:auto minmax(0,1fr) auto;
+    grid-template-areas:
+      "mission clock"
+      "log     rail"
+      "bottom  bottom";
+    padding:calc(13 * var(--s)) calc(15 * var(--s));
+    gap:calc(9 * var(--s)) calc(11 * var(--s));
+  }
+  .hud .z-compass{display:none}
+  .z-mission{justify-self:start;max-width:calc(420 * var(--s))}
+  .map canvas{width:calc(196 * var(--s));height:calc(196 * var(--s))}
+  .logfeed{max-height:calc(120 * var(--s))}
+}
+
+/* ============================================================
+   TOUCH FURNITURE — only mounted on coarse-pointer devices
+
+   Two rules govern everything here:
+
+   1. The bottom third belongs to the thumbs. Nothing else may sit in it.
+   2. Every target is at least 44 px in both axes, and the two you press while
+      the vehicle is moving — brake and drill — are larger than that. A control
+      you have to aim at is a control you do not use at speed.
+
+   The button set on screen is only what you press while moving. Camera, solar
+   array, photo mode and the HUD toggle are in the status tray.
+   ============================================================ */
+#touch{
+  --u:1px;
+  --s:calc(var(--u) * var(--hud-k));
+  /* Sticks are sized for a thumb, not for the layout, so they take the scale
+     knob at half strength — the HUD can halve without the controls following
+     it down to something you cannot hit. The button columns derive their
+     offset from --stick rather than carrying a hand-tuned number, so the two
+     cannot drift into each other when either is retuned. */
+  --stick:calc(126px * (.5 + var(--hud-k) * .5));
+  --gap:8px;
+  position:fixed;inset:0;z-index:26;pointer-events:none;
+  padding:0 max(14px,env(safe-area-inset-left)) max(14px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-right))
+}
+#touch .stick{position:absolute;bottom:max(18px,env(safe-area-inset-bottom));
+  width:var(--stick);height:var(--stick);
+  border:1px solid var(--hair2);border-radius:50%;
+  pointer-events:auto;background:rgba(12,12,12,.34);backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;touch-action:none}
+#touch .stick.left{left:max(18px,env(safe-area-inset-left))}
+#touch .stick.right{right:max(18px,env(safe-area-inset-right))}
+#touch .stick span{position:absolute;bottom:-15px;font-size:7.5px;letter-spacing:.24em;
+  color:rgba(240,237,229,.34)}
+/* The sticks are the body of the instrument, so they have no colour at all —
+   not the ring, not the nub. Drive is the one thing you never have to find. */
+#touch .nub{position:absolute;width:calc(var(--stick) * .4);height:calc(var(--stick) * .4);border-radius:50%;
+  background:rgba(240,237,229,.14);border:1px solid var(--hair2)}
+
+#touch .tbtns,#touch .tbtns2,#touch .tctx{position:absolute;display:flex;gap:var(--gap);pointer-events:auto}
+#touch .tbtns{right:max(18px,env(safe-area-inset-right));bottom:calc(var(--stick) + 30px);flex-direction:column;align-items:flex-end}
+#touch .tbtns2{left:max(18px,env(safe-area-inset-left));bottom:calc(var(--stick) + 30px);flex-direction:column}
+/* contextual pair: centre column, above the grip, which is above the sticks */
+#touch .tctx{left:50%;transform:translateX(-50%);bottom:calc(var(--stick) + 104px);
+  flex-direction:column-reverse;align-items:center}
+
+#touch .tb{
+  min-width:max(52px, calc(60 * var(--s)));min-height:44px;
+  padding:calc(9 * var(--s)) calc(11 * var(--s));border:1px solid var(--hair2);
+  font-size:max(9px, calc(9 * var(--s)));letter-spacing:.14em;background:rgba(12,12,12,.62);color:var(--grey);
+  backdrop-filter:blur(3px);touch-action:none;
+  display:flex;align-items:center;justify-content:center;text-align:center;
+}
+/* pressed while the rover is moving, so bigger than the 44 px floor */
+#touch .tb.big{min-height:56px;min-width:max(64px, calc(74 * var(--s)))}
+/* systems — relay, lamps, brake: neutral, found by position */
+#touch .tb.on{border-color:var(--bone);color:var(--bone);background:rgba(240,237,229,.14)}
+/* science — the game's verb set, and the only yellow controls in it */
+#touch .tb.sci{border-color:rgba(232,163,61,.42);color:var(--science)}
+#touch .tb.sci.on{border-color:var(--science);color:#1a1206;background:var(--science)}
+/* the ONE red control in the interface */
+#touch .tb.danger{border-color:rgba(192,40,32,.55);color:#E39A93;background:rgba(192,40,32,.12)}
+#touch .tb.danger.on{border-color:var(--emergency);background:rgba(192,40,32,.26);color:#fff}
+
+/* ---- one-handed ----
+   One stick, on the side the hand is already on, with the buttons stacked
+   straight above it in two columns so the same thumb reaches everything. The
+   look stick is gone; the camera auto-centres instead. */
+#touch.one-hand .tbtns,#touch.one-hand .tbtns2{
+  right:max(18px,env(safe-area-inset-right));left:auto;
+  bottom:calc(var(--stick) + 30px);flex-direction:column;align-items:flex-end;
+}
+#touch.one-hand .tbtns2{bottom:calc(var(--stick) + 30px + 172px)}
+#touch.one-hand .tctx{left:max(18px,env(safe-area-inset-left));right:auto;transform:none;align-items:flex-start}
+
+/* ============================================================
+   STATUS TRAY
+
+   The instruments a phone takes off the driving HUD are re-parented in here,
+   not hidden. The grip is a 44 px target in the dead strip between the two
+   sticks; opening it covers the thumb furniture, which is correct — you open
+   it at a stop.
+
+   --s is redeclared here for the same reason it exists on .hud and #touch:
+   it resolves only inside those subtrees, and a calc() over an undefined
+   variable makes CSS drop the whole declaration. Every instrument moved in
+   here is sized in --s.
+   ============================================================ */
+.tray{
+  --u:1.05px;
+  --s:calc(var(--u) * var(--hud-k));
+  /* same expression as #touch --stick: the grip has to clear the thumbsticks
+     and CSS variables do not cross between subtrees */
+  --stick:calc(126px * (.5 + var(--hud-k) * .5));
+  position:fixed;left:0;right:0;bottom:0;z-index:32;
+  display:flex;flex-direction:column;align-items:center;
+  pointer-events:none;
+}
+.tray.off{display:none}
+/* The grip sits in the strip ABOVE the sticks, not beside them. Measured on a
+   375 px screen: two 126 px sticks with their margins leave 115 px of gap in
+   the middle, a 104 px grip needs 104 of it, and at the largest HUD SIZE the
+   sticks grow and the gap does not — so a centred grip at the bottom edge
+   collided with both thumbs. One row up it is clear at every scale. */
+.tray-grip{
+  pointer-events:auto;order:2;
+  min-height:44px;min-width:104px;padding:0 16px 0 12px;
+  margin-bottom:calc(max(18px,env(safe-area-inset-bottom)) + var(--stick) + 26px);
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  border:1px solid var(--hair2);background:rgba(12,12,12,.72);backdrop-filter:blur(3px);
+  font-size:9px;letter-spacing:.22em;color:var(--grey);
+}
+.tray-grip i{display:block;width:16px;height:1px;background:currentColor;box-shadow:0 4px 0 currentColor}
+.tray:not(.closed) .tray-grip{margin-bottom:0;border-bottom:none;min-width:100%;order:0}
+/* open, the tray covers the thumb furniture — which is correct, because you
+   open it at a stop and the controls underneath are exactly where you left
+   them when you close it again */
+.tray-scroll{
+  pointer-events:auto;order:1;width:100%;
+  max-height:min(66vh, 520px);overflow-y:auto;-webkit-overflow-scrolling:touch;
+  background:rgba(8,8,8,.94);border-top:1px solid var(--hair2);
+  padding-bottom:max(14px,env(safe-area-inset-bottom));
+}
+.tray.closed .tray-scroll{display:none}
+.tray-body{
+  display:grid;gap:calc(9 * var(--s));
+  grid-template-columns:repeat(auto-fit,minmax(calc(230 * var(--s)),1fr));
+  padding:calc(11 * var(--s)) calc(11 * var(--s)) 0;
+  align-items:start;
+}
+.tray-foot{display:flex;gap:8px;padding:calc(11 * var(--s));flex-wrap:wrap}
+.tray-act{
+  flex:1 1 auto;min-height:44px;min-width:88px;padding:0 14px;
+  display:flex;align-items:center;justify-content:center;
+  border:1px solid var(--hair2);font-size:9.5px;letter-spacing:.18em;color:var(--grey);
+  background:rgba(240,237,229,.03);
+}
+.tray-act.on{border-color:var(--bone);color:var(--bone);background:rgba(240,237,229,.10)}
+/* Instruments get MORE room in here than they ever had on the driving HUD —
+   that is the trade: fewer things on screen while moving, each of the rest
+   readable when you stop to read it. */
+.tray-body .map canvas{width:calc(206 * var(--s));height:calc(206 * var(--s))}
+.tray-body .inst{height:auto}
+.tray-body .z-compass canvas{width:calc(660 * var(--s))}
+.tray-body .z-clock,.tray-body .z-compass{display:block}
+.tray-body #gHeat,.tray-body #sysChips{
+  border:1px solid var(--hair);padding:calc(9 * var(--s)) calc(12 * var(--s));background:rgba(20,20,20,.6)}
+
+/* ---- anything with thumbsticks ----
+   The sticks and the two button columns own the bottom of the screen, so on a
+   touch device the whole HUD moves above them. An 820 px tablet has room to
+   spare and still puts a thumb over each bottom corner, which is exactly where
+   the instrument cluster used to sit.
+
+   The hook is a body class set by the code that actually mounts the sticks,
+   not a (pointer:coarse) media query. Those two can disagree — and the rule
+   that matters is "are there thumbsticks on screen", which only the mounting
+   code knows. Both blocks are bounded away from the phone breakpoint below so
+   exactly one layout wins per device class. */
+@media (min-width:901px) and (min-height:521px){
+  body.touch-controls .hud{
+    grid-template-rows:auto auto minmax(0,1fr);
+    grid-template-areas:
+      "mission compass clock"
+      "bottom  bottom  rail"
+      ".       log     .";
+    align-content:start;
+  }
+  /* The rail is taller than the instrument cluster, so row 2 takes the rail's
+     height and row 3 starts level with the button columns. Keeping the log in
+     the middle track is what holds it clear of them — spanning the full width
+     put it straight through both. */
+  body.touch-controls .z-log{align-self:start;justify-self:start}
+  body.touch-controls .z-bottom{align-items:flex-start}
+  /* the cluster needs two tracks; boxed into one it crushed SYSTEMS to 87 px */
+  body.touch-controls .map canvas{width:calc(208 * var(--s));height:calc(208 * var(--s))}
+}
+@media (min-width:701px) and (max-width:900px) and (min-height:521px){
+  body.touch-controls .hud{
+    grid-template-rows:auto auto minmax(0,1fr);
+    grid-template-areas:
+      "mission clock"
+      "bottom  rail"
+      "log     log";
+    align-content:start;
+  }
+  body.touch-controls .z-log{align-self:start}
+  body.touch-controls .z-bottom{align-items:flex-start}
+}
+
+/* ---- phones ----
+   The bottom third belongs to the thumbs, so the HUD moves to the top of the
+   screen, and the instrument list is cut to what answers a question you have
+   while the wheels are turning:
+
+     where am I going    objective, map, heading
+     can I make it back  power, range to the sled
+     am I breaking it    integrity, attitude
+
+   Speed is marginal — the motor and the camera dolly already say it — and
+   everything else is reference. Reference is not deleted: the HUD's own code
+   RE-PARENTS those panels into the status tray, so the rules below are a
+   fallback for the frame before that runs, not the mechanism.
+
+   --u goes UP relative to the tablet, not down: fewer instruments, each one
+   bigger. */
+@media (max-width:700px), (max-height:520px){
+  .hud{
+    --u:.95px;
+    grid-template-columns:minmax(0,1fr) auto;
+    grid-template-rows:auto auto minmax(0,1fr);
+    grid-template-areas:
+      "mission rail"
+      "bottom  rail"
+      "log     log";
+    align-content:start;
+    padding:max(calc(7 * var(--s)),env(safe-area-inset-top)) calc(9 * var(--s)) 0 calc(9 * var(--s));
+    gap:calc(6 * var(--s)) calc(8 * var(--s));
+  }
+  .hud .z-compass,.hud .wheels,.hud .gpr,.hud .bay,.hud .z-clock,
+  .hud .chips,.hud #gHeat{display:none}
+  /* Fill a narrow portrait track, but stop there: on a landscape phone the
+     same 1fr track is 730 px wide and one line of objective text has no
+     business spanning it. */
+  .z-mission{justify-self:stretch;max-width:calc(320 * var(--s))}
+  /* Both header slots earn their place on a phone: the left one carries the
+     heading the compass strip used to, the right one the range to the sled.
+     They are the two questions the cut instruments were answering. */
+  .map > header{gap:calc(8 * var(--s))}
+  .tray-body .map > header{gap:calc(12 * var(--s))}
+  .z-bottom{grid-area:bottom;align-items:stretch;gap:calc(7 * var(--s))}
+  .z-rail{align-self:start}
+  .z-log{grid-area:log;align-self:start}
+  .panel{padding:calc(6 * var(--s)) calc(8 * var(--s)) calc(7 * var(--s))}
+  .panel > header{font-size:max(8.5px, calc(9.5 * var(--s)));letter-spacing:.16em;padding-bottom:calc(4 * var(--s));margin-bottom:calc(5 * var(--s))}
+  .mission h3{font-size:max(11px, calc(13 * var(--s)));letter-spacing:.13em;margin:0 0 calc(4 * var(--s))}
+  .mission-obj div{font-size:max(9.5px, calc(11 * var(--s)));padding:calc(1.5 * var(--s)) 0;grid-template-columns:calc(10 * var(--s)) 1fr;gap:calc(5 * var(--s))}
+  .mission-obj small{display:none}
+  /* a finished objective has served its purpose; the space has not */
+  .mission-obj .done{display:none}
+  .map canvas{width:calc(104 * var(--s));height:calc(104 * var(--s))}
+  .z-bottom{justify-content:flex-start}
+  /* basis, not grow — with the dial hidden in landscape a growing panel ate
+     the whole row */
+  .sys{width:auto;min-height:0;height:auto;flex:0 1 calc(210 * var(--s));min-width:0}
+  .gauge{margin-bottom:calc(5 * var(--s))}
+  .gauge label{font-size:max(8.5px, calc(9 * var(--s)));letter-spacing:.12em}
+  .gauge b{font-size:max(10px, calc(11 * var(--s)))}
+  .inst{height:auto;justify-content:center}
+  .logfeed{max-height:calc(44 * var(--s));gap:calc(3 * var(--s))}
+  .logline{font-size:max(9.5px, calc(10 * var(--s)));padding:calc(3 * var(--s)) calc(6 * var(--s));letter-spacing:0}
+  .prompt{font-size:max(10px, calc(10 * var(--s)));padding:calc(5 * var(--s)) calc(10 * var(--s));top:auto;bottom:46%}
+  .reticle{opacity:.65}
+  .discovery{top:24%}
+  .d-name{font-size:calc(17 * var(--s));letter-spacing:.16em}
+  .d-sub{font-size:calc(9.5 * var(--s));max-width:32ch}
+}
+
+/* short viewport (landscape phone): almost no vertical room, so the dial goes,
+   the map shrinks, and the thumb furniture comes down with it */
+@media (max-height:520px){
+  .hud{--u:.90px;gap:calc(4 * var(--s)) calc(8 * var(--s));padding-top:max(calc(5 * var(--s)),env(safe-area-inset-top))}
+  /* A landscape phone is short, not narrow. Stacking mission over the
+     instrument cluster walks the HUD straight down into the button columns,
+     so lay it out along the top edge instead and leave everything below y≈90
+     to the game and the thumbs. */
+  @media (min-width:601px){
+    .hud{
+      grid-template-columns:auto auto minmax(0,1fr) auto;
+      grid-template-rows:auto minmax(0,1fr);
+      grid-template-areas:
+        "mission bottom .   rail"
+        "log     log    log log";
+    }
+  }
+  .map canvas{width:calc(68 * var(--s));height:calc(68 * var(--s))}
+  .mission h3{font-size:max(10.5px, calc(12 * var(--s)));margin:0 0 calc(3 * var(--s))}
+  /* One line here, not two. On a 353 px screen the HUD ran to 45 % of the
+     height and the thumbs began at 70 %, leaving an 88 px slot of actual game
+     between them. Every row above is bought out of that slot. */
+  .logfeed{max-height:calc(24 * var(--s))}
+  /* the auto grid column squeezed this to 92 px and ran INTEGRITY into 100% */
+  .sys{flex:0 0 auto;width:calc(178 * var(--s))}
+  /* size to content: stretched, it took the map's height and left a hole */
+  .z-bottom{align-items:flex-start}
+  /* the thumb furniture comes down with the layout */
+  /* the thumb furniture comes down with the layout */
+  #touch{--stick:calc(84px * (.5 + var(--hud-k) * .5))}
+  #touch .stick{bottom:max(10px,env(safe-area-inset-bottom))}
+  #touch .stick span{display:none}
+
+  /* Three stacked buttons plus a stick is still 230 px of a 370 px screen, so
+     the columns lie down into the dead strip between the two sticks instead of
+     climbing the edges into the mission panel and the map. Six on-screen
+     buttons at the 44 px floor plus gaps is 350 px, and the strip on the
+     narrowest landscape phone worth supporting is 364 — it fits, but only
+     because the reference controls moved to the tray. */
+  #touch .tbtns,#touch .tbtns2{
+    flex-direction:row;align-items:flex-end;
+    bottom:max(12px,env(safe-area-inset-bottom));
+    gap:calc(5 * var(--s));
+  }
+  #touch .tbtns2{left:calc(var(--stick) + 26px);right:auto}
+  #touch .tbtns{right:calc(var(--stick) + 26px);left:auto}
+  /* The 44 px floor holds in both axes; only the LABEL gets tighter. */
+  #touch .tb{min-width:44px;padding:0 calc(6 * var(--s));
+    font-size:max(8px, calc(8.5 * var(--s)));letter-spacing:.04em}
+  #touch .tb.big{min-height:48px;min-width:56px}
+  /* the middle strip is taken, so the contextual pair sits above it */
+  #touch .tctx{flex-direction:row;bottom:calc(max(12px,env(safe-area-inset-bottom)) + 58px)}
+  #touch.one-hand .tbtns,#touch.one-hand .tbtns2{
+    flex-direction:row;left:auto;right:calc(var(--stick) + 26px);
+    bottom:max(12px,env(safe-area-inset-bottom));align-items:flex-end;
+  }
+  #touch.one-hand .tbtns2{bottom:calc(max(12px,env(safe-area-inset-bottom)) + 52px)}
+
+  /* A landscape phone has no dead strip at the bottom left for the grip, so
+     the tray opens from the top edge instead of the bottom. */
+  .tray{top:0;bottom:auto;justify-content:flex-start}
+  .tray-grip{order:0;margin:0 0 0 0}
+  .tray:not(.closed) .tray-grip{order:2;border-bottom:1px solid var(--hair2);border-top:none}
+  .tray-scroll{order:1;border-top:none;border-bottom:1px solid var(--hair2);
+    max-height:min(74vh,300px);padding-bottom:0;padding-top:max(6px,env(safe-area-inset-top))}
+  .tray-grip{margin-top:max(6px,env(safe-area-inset-top))}
+
+  /* nothing sits at the sides above the sticks any more, so the log gets the
+     full width back, and the discovery card drops below the top band */
+  .z-log{padding:0}
+  .discovery{top:50%}
+  .d-name{font-size:max(11px, calc(14 * var(--s)))}
+}
+
+/* menus have to be reachable with a thumb too */
+@media (max-width:700px), (max-height:520px){
+  .menu-grid{padding:18px;gap:18px}
+  .menu-actions{max-width:none}
+  .btn{padding:14px 16px;font-size:11px}
+  .brief{font-size:11.5px;line-height:1.7;margin:16px 0 20px}
+  .title{letter-spacing:.30em;margin-right:-.30em}
+  .panel-head{height:52px;padding:0 16px}
+  .settings{inset:52px 0 74px 0;padding:14px;grid-template-columns:1fr;gap:8px}
+  .keys{inset:52px 0 0 0;padding:18px 14px;grid-template-columns:1fr;gap:18px}
+  .codex-body{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .codex-list{max-height:34vh;border-right:none;border-bottom:1px solid var(--hair)}
+  .codex-read{padding:20px 18px;font-size:12px;line-height:1.8}
+  .card-inner{padding:24px 20px}
+  .card-title{font-size:20px}
+  .card-text{font-size:11.5px;line-height:1.75}
+  .panel-foot{padding:10px 14px;gap:6px;flex-wrap:wrap}
+  .panel-foot .btn{padding:9px 12px;font-size:10px}
+}
+
+/* ============================================================
+   DIAGNOSTICS — frame trace overlay
+
+   Sized in px, not in --s: `--s` resolves only inside the .hud and #touch
+   subtrees, and a calc() over an undefined variable makes CSS drop the whole
+   declaration. This panel lives on <body>.
+   ============================================================ */
+.seg-act{
+  border:1px solid var(--hair2);padding:7px 13px;font-size:9.5px;letter-spacing:.14em;
+  color:var(--grey);flex:0 0 auto;min-width:76px;text-align:center;
+}
+.seg-act:hover{color:var(--bone);border-color:var(--bone)}
+
+#perf{
+  position:fixed;z-index:38;pointer-events:none;
+  top:max(8px,env(safe-area-inset-top));left:max(8px,env(safe-area-inset-left));
+  padding:8px 10px;border:1px solid var(--hair2);background:rgba(8,8,8,.80);
+  font-variant-numeric:tabular-nums;letter-spacing:.04em;color:var(--bone);
+  min-width:186px;
+}
+.perf-now{font-size:15px;display:flex;justify-content:space-between;gap:10px}
+.perf-now b{font-weight:400;color:var(--data)}
+.perf-sub{font-size:8.5px;letter-spacing:.16em;color:rgba(240,237,229,.42);margin-top:4px}
+.perf-rows{margin-top:7px;border-top:1px solid var(--hair);padding-top:6px;font-size:9.5px}
+.perf-rows > div{display:flex;justify-content:space-between;gap:6px;padding:1px 0}
+.perf-rows .perf-hd{color:rgba(240,237,229,.38);letter-spacing:.14em}
+.perf-rows i,.perf-rows b,.perf-rows u{font-style:normal;font-weight:400;text-decoration:none;
+  flex:1 1 0;text-align:right}
+.perf-rows i{text-align:left;color:rgba(240,237,229,.42)}
+.perf-rows b{color:var(--data)}

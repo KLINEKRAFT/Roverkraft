@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ROVERKRAFT — The Philolaus Descent</title>
+<meta name="description" content="A lunar rover survey sim for the phone. 1/6 g, deformable regolith with a real soil map, ground-penetrating radar, and a cold trap at 72° north that has been keeping its post for three and a half million years." />
+<meta name="theme-color" content="#0A0A0A" />
+<!-- Installable. The game already fetches nothing from anywhere, so "works
+     offline" costs a manifest and a service worker and no architecture. -->
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="assets/icon/apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="ROVERKRAFT" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<!-- Two circles: the basin, and the hole in its floor. Nothing else fits in
+     sixteen pixels and nothing else needs to. -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230A0A0A'/><circle cx='16' cy='16' r='11' fill='none' stroke='%23F0EDE5' stroke-width='1.6'/><circle cx='16' cy='16' r='3.4' fill='%23F0EDE5'/></svg>" />
+<!-- ?v= is a cache buster: GitHub Pages serves assets with max-age=600, so a
+     returning player keeps the old layout for ten minutes after a deploy.
+     Bump this whenever styles.css changes in a way players must see. -->
+<link rel="stylesheet" href="src/ui/styles.css?v=6" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="stage" aria-label="Game viewport"></canvas>
+
+<!-- ============ BOOT / LOADING ============ -->
+<div id="boot" class="overlay boot">
+  <div class="boot-inner">
+    <!-- The mark is the crater and the pit, drawn at the only two sizes that
+         matter and at no others. The old one had seven concentric rules,
+         four tick marks and three decorative craters, and rotated. -->
+    <div class="crest" aria-hidden="true">
+      <svg viewBox="0 0 120 120" width="76" height="76">
+        <circle cx="60" cy="60" r="46" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <circle cx="60" cy="60" r="13" fill="currentColor"/>
+      </svg>
+    </div>
+    <h1 class="title">ROVERKRAFT</h1>
+    <p class="subtitle">The Philolaus Descent</p>
+    <div class="loadbar"><i id="loadfill"></i></div>
+    <p class="loadtext" id="loadtext">initialising telemetry link…</p>
+    <p class="wordmark">KLINEKRAFT</p>
+    <p class="legal">K6 MERIDIAN · NORTHFIELD COMMISSION · LICENCE 44-C</p>
+  </div>
+</div>
+
+<!-- ============ MAIN MENU ============ -->
+<div id="menu" class="overlay menu hidden">
+  <div class="menu-grid">
+    <div class="menu-left">
+      <h1 class="title big">ROVERKRAFT</h1>
+      <p class="subtitle">The Philolaus Descent</p>
+      <div class="brief" id="menuBrief"></div>
+      <div class="menu-actions">
+        <button class="btn primary" id="btnPlay">BEGIN DESCENT</button>
+        <button class="btn" id="btnContinue" hidden>RESUME SURVEY</button>
+        <button class="btn ghost" id="btnFreeRoam">FREE SURVEY</button>
+        <button class="btn ghost" id="btnControls">CONTROLS</button>
+        <button class="btn ghost" id="btnSettings">SYSTEMS</button>
+        <!-- shown only where the browser offers an install, which is most of
+             Android and, via Share > Add to Home Screen, none of iOS -->
+        <button class="btn ghost" id="btnInstall" hidden>ADD TO HOME SCREEN</button>
+      </div>
+      <p class="hint">WebGL2 · GPU accelerated · headphones recommended</p>
+    </div>
+    <div class="menu-right">
+      <div class="dossier">
+        <div class="dossier-row"><span>OPERATION</span><b>NORTHFIELD</b></div>
+        <div class="dossier-row"><span>SITE</span><b>PHILOLAUS · 72.1° N</b></div>
+        <div class="dossier-row"><span>GRAVITY</span><b>1.62 m/s²</b></div>
+        <div class="dossier-row"><span>ATMOSPHERE</span><b>NONE</b></div>
+        <div class="dossier-row"><span>SURFACE TEMP</span><b>−173 … +117 °C</b></div>
+        <div class="dossier-row"><span>LAST CONTACT</span><b>D+214</b></div>
+        <div class="dossier-row alert"><span>STATUS</span><b>SILENT</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ HUD ============ -->
+<div id="hud" class="hud hidden">
+  <!-- ── row 1 ─────────────────────────────────────────────── -->
+  <div class="z-mission">
+    <section class="panel mission" id="missionBox">
+      <header><span id="missionTag">MISSION 01</span></header>
+      <h3 id="missionName">COLD START</h3>
+      <div class="mission-obj" id="missionObj">—</div>
+    </section>
+  </div>
+
+  <div class="z-compass"><canvas id="compass" width="660" height="42"></canvas></div>
+
+  <div class="z-clock">
+    <section class="panel clock">
+      <div class="row"><span>SOL PHASE</span><b id="sunPhase">—</b></div>
+      <div class="row"><span>MET</span><b id="met">00:00:00</b></div>
+      <div class="row"><span>RANGE · SLED</span><b id="rangeHome">—</b></div>
+      <div class="row"><span>ODOMETER</span><b id="odo">0.00 km</b></div>
+      <div class="row"><span>CAMERA</span><b id="camMode">CHASE</b></div>
+    </section>
+  </div>
+
+  <!-- ── row 2 ─────────────────────────────────────────────── -->
+  <div class="z-log"><div class="logfeed" id="logfeed"></div></div>
+
+  <div class="z-rail">
+    <section class="panel map">
+      <header><span id="mapName">PHILOLAUS BASIN</span><b id="mapScale">400 m</b></header>
+      <canvas id="minimap" width="300" height="300"></canvas>
+    </section>
+    <section class="panel bay">
+      <header><span>SAMPLE BAY</span><b id="bayCount">0/6</b></header>
+      <div class="baygrid" id="baygrid"></div>
+    </section>
+  </div>
+
+  <!-- ── row 3 ─────────────────────────────────────────────── -->
+  <div class="z-bottom">
+    <section class="panel sys">
+      <header><span>SYSTEMS</span></header>
+      <!-- Five values, one form. The speed dial that used to sit beside this
+           panel was a drawn bezel with a drawn needle around a number that was
+           already printed in its middle — an instrument imitating an
+           instrument. The number is the instrument. -->
+      <div class="gauge" id="gSpeed"><label>SPEED</label><b>0.0 km/h</b><div class="bar"><i></i></div></div>
+      <div class="gauge" id="gBatt"><label>POWER</label><b>100%</b><div class="bar"><i></i></div></div>
+      <div class="gauge" id="gHeat"><label>THERMAL</label><b>+18°</b><div class="bar"><i></i></div></div>
+      <div class="gauge" id="gHull"><label>INTEGRITY</label><b>100%</b><div class="bar"><i></i></div></div>
+      <div class="gauge" id="gTilt"><label>ATTITUDE</label><b>0°</b><div class="bar"><i></i></div></div>
+      <div class="chips" id="sysChips"></div>
+    </section>
+
+    <section class="panel inst wheels">
+      <header><span>WHEEL LOAD / SLIP</span></header>
+      <canvas id="wheelmon" width="236" height="112"></canvas>
+    </section>
+
+    <section class="panel inst gpr">
+      <header><span>GROUND PENETRATING RADAR</span><b id="gprState">IDLE</b></header>
+      <canvas id="gprscope" width="290" height="112"></canvas>
+    </section>
+  </div>
+
+  <!-- centre reticle / context prompt -->
+  <div class="reticle" id="reticle"></div>
+  <div class="prompt hidden" id="prompt"></div>
+
+  <!-- damage / discovery flashes -->
+  <div class="vig" id="vig"></div>
+  <div class="discovery hidden" id="discovery"><div class="d-kicker">SUBSURFACE RETURN</div><div class="d-name"></div><div class="d-sub"></div></div>
+</div>
+
+<!-- ============ STATUS TRAY ============
+     Everything the phone takes off the driving HUD lives here, one thumb
+     reach from the bottom edge. Deliberately not called a .panel and not an
+     .overlay.sheet: .panel is the HUD instrument class, and a tray is not a
+     full-screen sheet. -->
+<div id="tray" class="tray closed">
+  <button class="tray-grip" id="trayGrip" aria-expanded="false">
+    <i aria-hidden="true"></i><span>STATUS</span>
+  </button>
+  <div class="tray-scroll">
+    <div class="tray-body" id="trayBody"></div>
+    <!-- Controls that came off the thumb furniture because you do not press
+         them while the wheels are turning. Nothing is unreachable; it is just
+         not on screen at 30 km/h. -->
+    <div class="tray-foot">
+      <button class="tray-act" data-press="KeyC">CAMERA</button>
+      <button class="tray-act" data-press="KeyT">ARRAY</button>
+      <button class="tray-act" data-press="KeyP">PHOTO</button>
+      <button class="tray-act" data-press="KeyK">FRAME</button>
+      <button class="tray-act" data-press="KeyH">HUD</button>
+      <button class="tray-act" id="trayCodex">CODEX</button>
+      <button class="tray-act" id="traySystems">SYSTEMS</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ CODEX ============ -->
+<div id="codex" class="overlay sheet hidden">
+  <div class="panel-head"><h2>FIELD CODEX</h2><button class="x" data-close="codex">ESC</button></div>
+  <div class="codex-body">
+    <ul class="codex-list" id="codexList"></ul>
+    <article class="codex-read" id="codexRead"><h3>SELECT AN ENTRY</h3><p>Recovered fragments, sample analyses and Directorate telemetry appear here as you survey the basin.</p></article>
+  </div>
+</div>
+
+<!-- ============ PAUSE / SETTINGS ============ -->
+<div id="pause" class="overlay sheet hidden">
+  <div class="panel-head"><h2 id="pauseTitle">SYSTEMS</h2><button class="x" data-close="pause">ESC</button></div>
+  <div class="settings" id="settingsBody"></div>
+  <div class="panel-foot">
+    <button class="btn" id="btnResume">RESUME</button>
+    <button class="btn ghost" id="btnCodexFromPause">CODEX</button>
+    <button class="btn ghost" id="btnHelp">CONTROLS</button>
+    <button class="btn ghost danger" id="btnAbort">ABORT TO MENU</button>
+  </div>
+</div>
+
+<!-- ============ CONTROLS ============ -->
+<div id="help" class="overlay sheet hidden">
+  <div class="panel-head"><h2>ROVER CONTROL SCHEME</h2><button class="x" data-close="help">ESC</button></div>
+  <div class="keys" id="keysBody"></div>
+</div>
+
+<!-- ============ MISSION CARD ============ -->
+<div id="cardOverlay" class="overlay card hidden">
+  <div class="card-inner">
+    <div class="card-kicker" id="cardKicker">MISSION 01</div>
+    <h2 class="card-title" id="cardTitle"></h2>
+    <p class="card-text" id="cardText"></p>
+    <div class="card-obj" id="cardObj"></div>
+    <button class="btn primary" id="cardGo">ACKNOWLEDGE</button>
+  </div>
+</div>
+
+<noscript><div class="overlay boot"><div class="boot-inner"><h1 class="title">ROVERKRAFT</h1><p class="subtitle">JavaScript is required.</p></div></div></noscript>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

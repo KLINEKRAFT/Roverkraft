@@ -1,0 +1,19 @@
+{
+  "name": "ROVERKRAFT — The Philolaus Descent",
+  "short_name": "ROVERKRAFT",
+  "description": "A lunar rover survey sim for the phone. 1/6 g, deformable regolith with a real soil map, ground-penetrating radar, and a cold trap at 72° north that has been keeping its post for three and a half million years.",
+  "id": "/roverkraft/",
+  "start_url": ".",
+  "scope": ".",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "any",
+  "background_color": "#0A0A0A",
+  "theme_color": "#0A0A0A",
+  "categories": ["games", "education"],
+  "icons": [
+    { "src": "assets/icon/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icon/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
